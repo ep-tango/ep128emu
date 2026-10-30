@@ -74,6 +74,7 @@ namespace Ep128Emu {
     void disableShader();
     void displayFrame();
     void initializeGLDisplay();
+    virtual void resetRewindOutputBuffers();
     void drawFrame_quality0(Message_LineData **lineBuffers_,
                             double x0, double y0, double x1, double y1,
                             bool oddFrame_);
@@ -111,6 +112,8 @@ namespace Ep128Emu {
     double        displayFrameRate;
     double        inputFrameRate;
     Message_LineData  **frameRingBuffer[4];
+    bool          rewindRingResetPending;
+    bool          rewindGLClearPending;
     double        ringBufferReadPos;
     int           ringBufferWritePos;
     int           shaderMode;   // 0: no shader, 1: PAL

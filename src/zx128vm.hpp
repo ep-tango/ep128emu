@@ -24,6 +24,7 @@
 #include "z80/z80.hpp"
 #include "zxmemory.hpp"
 #include "zxioport.hpp"
+#include "speccydos.hpp"
 #include "ay3_8912.hpp"
 #include "ula.hpp"
 #include "display.hpp"
@@ -36,6 +37,7 @@ namespace Ep128Emu {
 }
 
 namespace ZX128 {
+  class BetaDiskBus;
 
   class ZX128VM : public Ep128Emu::VirtualMachine {
    private:
@@ -112,6 +114,9 @@ namespace ZX128 {
     IOPorts_  ioPorts;
     AY3_8912  ay3;
     ULA_      ula;
+    // Experimental expansion; null in every normal Spectrum session.
+    SpeccyDOSBus *speccyDOS;
+    BetaDiskBus *betaDisk;
     uint32_t  ulaCyclesRemainingL;      // in 2^-32 ULA cycle units
     int32_t   ulaCyclesRemainingH;      // in ULA cycle units
     bool      spectrum128Mode;          // true if RAM size is 128K
@@ -148,6 +153,7 @@ namespace ZX128 {
     // true after loading a snapshot; if not playing a demo as well, the
     // keyboard state will be cleared
     bool      snapshotLoadFlag;
+    bool      rewindRestoreMode;
     // used for counting time between demo events (in ULA cycles)
     uint64_t  demoTimeCnt;
     uint8_t   breakPointPriorityThreshold;
@@ -183,9 +189,14 @@ namespace ZX128 {
     void stopDemoPlayback();
     void stopDemoRecording(bool writeFile_);
     uint8_t checkSingleStepModeBreak();
+    uint8_t peekBetaShadowByte(uint16_t addr);
     void convertKeyboardState();
     void resetKeyboard();
     void initializeMemoryPaging();
+    EP128EMU_INLINE uint8_t readMemoryMapped(uint16_t addr, bool opcode);
+    EP128EMU_INLINE void writeMemoryMapped(uint16_t addr, uint8_t value);
+    void preOpcodeFetchSpeccyDOS(uint16_t pc);
+    void preOpcodeFetchBetaDisk(uint16_t pc);
     // Set function to be called at every ULA cycle. The functions are called
     // in the order of being registered; up to 16 callbacks can be set.
     void setCallback(void (*func)(void *userData), void *userData_,
@@ -193,6 +204,17 @@ namespace ZX128 {
    public:
     ZX128VM(Ep128Emu::VideoDisplay&, Ep128Emu::AudioOutput&);
     virtual ~ZX128VM();
+    // EF07C internal opt-in. No GUI/config state or automatic ROM sourcing.
+    // Caller must own/verify firmware and select a disposable test disk.
+    bool installSpeccyDOSFirmware(const std::vector<uint8_t>& image,
+                                 bool alreadyDecoded = false);
+    void removeSpeccyDOS();
+    SpeccyDOSBus *getSpeccyDOSForTesting() { return speccyDOS; }
+    const SpeccyDOSBus *getSpeccyDOSForTesting() const { return speccyDOS; }
+    bool installBetaDiskFirmware(const std::vector<uint8_t>& image);
+    void removeBetaDisk();
+    BetaDiskBus *getBetaDiskForTesting() { return betaDisk; }
+    const BetaDiskBus *getBetaDiskForTesting() const { return betaDisk; }
     /*!
      * Run emulation for the specified number of microseconds.
      */
@@ -237,7 +259,8 @@ namespace ZX128 {
             (void (*)(void *, const char *)) 0,
         void (*fileNameCallback_)(void *userData, std::string& fileName) =
             (void (*)(void *, std::string&)) 0,
-        void *userData_ = (void *) 0);
+        void *userData_ = (void *) 0,
+        bool preserveAllVideoFrames_ = false);
     /*!
      * Set output file name for video capture (an empty file name means no
      * file is written). openVideoCapture() should be called first.
@@ -443,6 +466,12 @@ namespace ZX128 {
      * playing a demo.
      */
     virtual bool getIsPlayingDemo() const;
+    virtual bool getIsRewindRestoreSupported() const;
+    virtual bool getRewindRuntimeState(
+        Ep128Emu::VirtualMachine::RewindRuntimeState& state) const;
+    virtual bool restoreRewindRuntimeState(
+        const Ep128Emu::VirtualMachine::RewindRuntimeState& state);
+    virtual void setRewindRestoreMode(bool enabled);
     // ----------------
     virtual void loadState(Ep128Emu::File::Buffer&);
     virtual void loadMachineConfiguration(Ep128Emu::File::Buffer&);

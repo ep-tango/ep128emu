@@ -376,9 +376,17 @@ namespace CPC464 {
       if (version < 0x01000003U) {
         hSyncCnt = registers[3] - hSyncCnt;
         vSyncCnt = (registers[3] >> 4) - vSyncCnt;
+        hSyncCnt = hSyncCnt & 0x0F;
+        vSyncCnt = vSyncCnt & 0x0F;
       }
-      hSyncCnt = hSyncCnt & 0x0F;
-      vSyncCnt = vSyncCnt & 0x0F;
+      else {
+        hSyncCnt = hSyncCnt & 0x0F;
+        // In the current format vSyncCnt is the raw internal counter.
+        // A vertical sync width nibble of zero represents 16 lines, so the
+        // live counter can legitimately be 16 and must survive round-trip.
+        if (vSyncCnt > 16)
+          vSyncCnt = vSyncCnt & 0x0F;
+      }
       rowAddress = buf.readByte() & 0x1F;
       verticalPos = buf.readByte() & 0x7F;
       oddField = buf.readBoolean();

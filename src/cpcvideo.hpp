@@ -22,6 +22,7 @@
 
 #include "ep128emu.hpp"
 #include "crtc6845.hpp"
+#include <vector>
 
 namespace CPC464 {
 
@@ -114,6 +115,10 @@ namespace CPC464 {
       if (newState && !vSyncCnt)
         vSyncCnt = 26;
     }
+    // Host-only transient state used by rewind. This deliberately does not
+    // change the portable snapshot file format.
+    void getRewindState(std::vector<unsigned char>& state) const;
+    bool restoreRewindState(const std::vector<unsigned char>& state);
     void reset();
   };
 

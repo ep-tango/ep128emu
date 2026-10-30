@@ -8,6 +8,8 @@ decl {\#include "gui.hpp"} {selected
 
 class Ep128EmuGUI {open
 } {
+  decl {void queueWindowsDroppedFiles(const std::string& files);} {public
+  }
   decl {friend class Ep128EmuGUI_DiskConfigWindow;} {public
   }
   decl {friend class Ep128EmuGUI_DisplayConfigWindow;} {public
@@ -24,6 +26,8 @@ class Ep128EmuGUI {open
   }
   decl {friend class Ep128EmuGUI_AboutWindow;} {public
   }
+  decl {friend class Ep128EmuGUI_ShortcutConfigWindow;} {public
+  }
   decl {Ep128Emu::VideoDisplay& display;} {}
   decl {Ep128Emu::AudioOutput& audioOutput;} {}
   decl {Ep128Emu::VirtualMachine& vm;} {}
@@ -33,17 +37,55 @@ class Ep128EmuGUI {open
   decl {Fl_Window *emulatorWindow;} {}
   decl {uintptr_t mainThreadID;} {}
   decl {int displayMode;} {}
+  decl {bool pixelPerfectEnabled;} {}
+  decl {bool snapshotRuntimeMemoryActive;} {}
+  decl {int pixelPerfectPreviousWidth;} {}
+  decl {int pixelPerfectPreviousHeight;} {}
+  decl {int pixelPerfectMenuScreenNum;} {}
+  decl {float pixelPerfectMenuScreenScale;} {}
+  decl {int pixelPerfectMenuDisplayMode;} {}
+  decl {int mouseXOffset;} {}
+  decl {int mouseYOffset;} {}
   decl {bool exitFlag;} {}
   decl {bool errorFlag;} {}
+  decl {int restartMachineType;} {}
+  decl {int restartLoadType;} {}
+  decl {std::string restartLoadFileName;} {}
   decl {int oldWindowWidth;} {}
   decl {int oldWindowHeight;} {}
   decl {int oldDisplayMode;} {}
+  decl {int mainWindowPositionX;} {}
+  decl {int mainWindowPositionY;} {}
   decl {int oldDemoStatus;} {}
   decl {int32_t oldSpeedPercentage;} {}
   decl {bool oldPauseFlag;} {}
+  decl {bool runtimeHUDEnabled;} {}
+  decl {bool showInformationalDialogs;} {}
+  decl {bool betaDOSAutoEnterOnReset;} {}
+  decl {int betaDOSAutoEnterPolls;} {}
+  decl {std::string runtimeStatusText;} {}
+  decl {bool tapeRelayClickEnabled;} {}
+  decl {bool printerCaptureEnabled;} {}
+  decl {int printerOutputFormat;} {}
+  decl {std::string printerOutputDirectory;} {}
+  decl {std::FILE *printerOutputFile;} {}
+  decl {uint64_t printerOverflowReported;} {}
+  decl {int tapeMotorSpinUpDelayMs;} {}
+  decl {bool largeMenuEnabled;} {}
+  decl {int rewindHistoryLimitMiB;} {}
+  decl {bool rewindCaptureUserEnabled;} {}
+  decl {double measuredFPS;} {}
+  decl {uint64_t statsFrameSequence;} {}
+  decl {bool oldAudioRecordingFlag;} {}
+  decl {bool oldVideoRecordingFlag;} {}
+  decl {Ep128Emu::Timer audioRecordTimer;} {}
+  decl {Ep128Emu::Timer videoRecordTimer;} {}
   decl {long oldTapeSampleRate;} {}
   decl {int oldTapeSampleSize;} {}
   decl {uint32_t oldFloppyDriveLEDState;} {}
+  decl {uint8_t oldTapeRemoteState;} {}
+  decl {uint32_t oldTapeMechanicalEngagementCount;} {}
+  decl {bool oldForceTapeMotorOn;} {}
   decl {bool oldTapeReadOnlyFlag;} {}
   decl {long oldTapePosition;} {}
   decl {uint32_t functionKeyState;} {}
@@ -56,20 +98,55 @@ class Ep128EmuGUI {open
   decl {bool debugWindowShowFlag;} {}
   decl {bool debugWindowOpenFlag;} {}
   decl {bool browseFileWindowShowFlag;} {}
+  decl {std::atomic<bool> guestFileIOPickerActive;} {}
   decl {int browseFileStatus;} {}
   decl {Fl_Native_File_Chooser *browseFileWindow;} {}
   decl {Fl_Window *windowToShow;} {}
   decl {std::string snapshotDirectory;} {}
   decl {std::string demoDirectory;} {}
   decl {std::string soundFileDirectory;} {}
+  decl {std::string videoCaptureOutputFileName;} {}
+  decl {std::string videoCaptureTempFileName;} {}
+  decl {int activeVideoCaptureFormat;} {}
+  decl {int audioRecordFormat;} {}
+  decl {std::string appShortcutStrings[EP_SC_COUNT];} {}
+  decl {int appShortcutKeys[EP_SC_COUNT];} {}
+  decl {int appShortcutModifiers[EP_SC_COUNT];} {}
+  decl {uint32_t appShortcutPressedMask;} {}
   decl {std::string configDirectory;} {}
   decl {std::string loadFileDirectory;} {}
   decl {std::string tapeImageDirectory;} {}
   decl {std::string diskImageDirectory;} {}
   decl {std::string romImageDirectory;} {}
+  decl {std::string speccyDOSMountedSDDPath;} {}
+  decl {bool speccyDOSWriteProtect;} {}
+  decl {bool betaDiskWriteProtect;} {}
+  decl {std::string betaDiskTemporaryDiskFile;} {}
+  decl {int betaDOSInputStep;} {}
+  decl {bool betaDOSInputPressed;} {}
   decl {std::string debuggerDirectory;} {}
   decl {std::string screenshotDirectory;} {}
   decl {std::string screenshotFileName;} {}
+  decl {unsigned int screenshotSequence;} {}
+  decl {std::string recentDiskImages[10];} {}
+  decl {std::string recentTapeImages[10];} {}
+  decl {std::string recentSnapshots[10];} {}
+  decl {std::string recentConfigurations[10];} {}
+  decl {bool dropPasteExpected;} {}
+  decl {std::string pendingDroppedFiles;} {}
+  decl {std::string archiveTemporaryDirectory;} {}
+  decl {std::string archiveAutoRunText;} {}
+  decl {size_t archiveAutoRunPosition;} {}
+  decl {int archiveAutoRunPhase;} {}
+  decl {int archiveAutoRunKeyCode;} {}
+  decl {bool archiveAutoRunShift;} {}
+  decl {unsigned int archiveAutoRunPreviousSpeedPercentage;} {}
+  decl {bool archiveAutoRunSpeedOverrideActive;} {}
+  decl {uint64_t archiveAutoRunBootFrameStart;} {}
+  decl {uint64_t archiveAutoRunPostStartupFrame;} {}
+  decl {uint64_t archiveAutoRunKeyFrameStart;} {}
+  decl {Ep128Emu::File::Buffer archiveOriginalConfigState;} {}
+  decl {bool archiveTemporaryConfigActive;} {}
   decl {Ep128Emu::ConfigurationDB guiConfig;} {}
   decl {Ep128EmuGUI_DiskConfigWindow *diskConfigWindow;} {}
   decl {Ep128EmuGUI_DisplayConfigWindow *displaySettingsWindow;} {}
@@ -78,9 +155,10 @@ class Ep128EmuGUI {open
   decl {Ep128EmuGUI_MachineConfigWindow *machineConfigWindow;} {}
   decl {Ep128EmuGUI_DebugWindow *debugWindow;} {}
   decl {Ep128EmuGUI_AboutWindow *aboutWindow;} {}
+  decl {Ep128EmuGUI_ShortcutConfigWindow *shortcutConfigWindow;} {}
   decl {Ep128Emu::JoystickInput joystickInput;} {}
   decl {Ep128Emu::Timer statsTimer;} {}
-  decl {char windowTitleBuf[48];} {}
+  decl {char windowTitleBuf[256];} {}
   decl {unsigned int savedSpeedPercentage;} {}
   decl {float mouseXScale;} {}
   decl {float mouseYScale;} {}
@@ -93,6 +171,19 @@ class Ep128EmuGUI {open
   decl {void updateDisplay_windowTitle();} {}
   decl {void updateDisplay_windowMode();} {}
   decl {void updateDisplay_windowSize();} {}
+  decl {void getPixelPerfectDisplayRect(int& x, int& y, int& w, int& h);} {}
+  decl {void getPixelPerfectWindowSize(float ppu, int& w, int& h);} {}
+  decl {void updatePixelPerfectMenuLabel(bool force = false);} {}
+  decl {void resizePixelPerfectWindow();} {}
+  decl {void applyPixelPerfectDisplayState(bool remapHighRes_ = true);} {}
+  decl {void pollPrinterOutput();} {}
+  decl {void setPrinterOutputFormat(int fmt);} {}
+  decl {void closePrinterOutputFile();} {}
+  decl {void setTapeMotorSpinUpDelay(int ms);} {}
+  decl {unsigned int getEffectiveTapeMotorSpinUpDelayMs() const;} {}
+  decl {void updateRecordingStatusDisplay();} {}
+  decl {void updateRuntimeStatusDisplay(const Ep128Emu::VMThread::VMThreadStatus& status);} {}
+  decl {void syncRecordingStatusState();} {}
   decl {void updateDisplay(double t = 0.025);} {public
   }
   decl {void errorMessage(const char *msg);} {public
@@ -100,9 +191,24 @@ class Ep128EmuGUI {open
   decl {Fl_Menu_Item& getMenuItem(int n);} {}
   decl {int getMenuItemIndex(int n);} {}
   decl {void createMenus();} {}
+  decl {int getMenuBarHeight() const;} {}
+  decl {void applyMenuSize();} {}
+  decl {void applyRewindHistoryLimit();} {}
+  decl {void requestMachineRestart(int machineType);} {}
+  decl {void requestMachineRestartAndLoad(int machineType, int loadType, const std::string& fileName);} {}
+  decl {bool prepareMachineTypedLoad(int fileMachineType, const std::string& fileName, int loadType, bool addRecent);} {}
   decl {void run();} {public
   }
+  decl {int getRestartMachineType() const { return restartMachineType; }} {public
+  }
+  decl {int getRestartLoadType() const { return restartLoadType; }} {public
+  }
+  decl {const std::string& getRestartLoadFileName() const { return restartLoadFileName; }} {public
+  }
   decl {void resizeWindow(int w, int h);} {}
+  decl {void restoreMainWindowPosition();} {}
+  decl {void positionAuxiliaryWindow(Fl_Window *w);} {public
+  }
   decl {void sendMouseEvent(bool enableButtons, bool mouseWheelEvent);} {}
   decl {static int handleFLTKEvent(void *userData, int event);} {}
   decl {bool lockVMThread(size_t t = 2000);} {public
@@ -111,19 +217,63 @@ class Ep128EmuGUI {open
   }
   decl {bool browseFile(std::string& fileName, std::string& dirName, const char *pattern, int type, const char *title);} {public
   }
+  decl {bool browseAudioOutputFile(std::string& fileName);} {public
+  }
   decl {void writeFile(Ep128Emu::File& f, const char *fileName);} {public
   }
   decl {void applyEmulatorConfiguration(bool updateWindowFlag_ = false);} {public
   }
+  decl {void setSnapshotRuntimeMemoryActive(bool active);} {public
+  }
+  decl {bool getSnapshotRuntimeMemoryActive() const { return snapshotRuntimeMemoryActive; }} {public
+  }
   decl {void updateMenu();} {}
+  decl {bool setApplicationShortcuts(const std::string *values, std::string& error);} {}
+  decl {void resetApplicationShortcuts();} {}
+  decl {void refreshApplicationShortcutMenus();} {}
+  decl {void syncTimelineKeyState(int shortcutIndex, bool pressed);} {}
+  decl {bool handleApplicationShortcut(int keyCode, bool isKeyPress);} {}
+  decl {static void nextFrameRepeatCallback(void *userData);} {}
+  decl {static void previousFrameRepeatCallback(void *userData);} {}
   decl {static void errorMessageCallback(void *userData, const char *msg);} {}
   decl {static void fileNameCallback(void *userData, std::string& fileName);} {}
+  decl {static void videoFileNameCallback(void *userData, std::string& fileName);} {}
   decl {static void fltkCheckCallback(void *userData);} {}
   decl {static void screenshotCallback(void *userData, const unsigned char *buf, int w_, int h_);} {}
   decl {static void pollJoystickInput(void *userData);} {}
   decl {bool closeDemoFile(bool stopDemo_);} {}
   decl {void saveQuickConfig(int n);} {}
+  decl {void addRecentFile(std::string *list, const std::string& fileName);} {}
+  decl {void removeRecentFile(std::string *list, int n);} {}
+  decl {void refreshRecentMenus();} {}
+  decl {void loadSnapshotFile(const std::string& fileName, bool addRecent = true);} {}
+  decl {void loadConfigFile(const std::string& fileName, bool addRecent = true);} {}
+  decl {void openTapeImageFile(const std::string& fileName, bool addRecent = true);} {}
+  decl {void insertFloppyAImageFile(const std::string& fileName, bool addRecent = true);} {}
+  decl {void processDroppedFiles(const std::string& fileList);} {}
+  decl {bool processDroppedArchive(const std::string& fileName);} {}
+  decl {bool chooseArchiveProgram(const std::string& directory, const std::vector<std::string>& programs, std::string& selectedFile);} {}
+  decl {bool chooseArchiveRunConfiguration(const std::string& archiveDirectory, const std::string& programFile, bool& useStandard128K);} {}
+  decl {bool archiveCurrentSetupSupportsAutoRun() const;} {}
+  decl {bool archiveStandard128KAvailable() const;} {}
+  decl {void applyArchiveStandard128KConfiguration();} {}
+  decl {void restoreArchivePersistentConfiguration();} {}
+  decl {void rollbackArchiveTemporaryConfiguration();} {}
+  decl {void finishArchiveFileIOOverride(bool updateWindowFlag_, bool replaceConfiguration_);} {}
+  decl {void startArchiveAutoRun(const std::string& programFile);} {}
+  decl {void restoreArchiveAutoRunSpeed();} {}
+  decl {void archiveAutoRunStep();} {}
+  decl {static void archiveAutoRunCallback(void *userData);} {}
+  decl {void rememberDiskImage(const std::string& fileName) { addRecentFile(recentDiskImages, fileName); }} {public
+  }
+  decl {static void droppedFileCallback(void *userData);} {}
   decl {static void menuCallback_File_LoadFile(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_File_LoadSnapshot(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_RecentDisk(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_RecentTape(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_RecentSnapshot(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_RecentConfig(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_RecentClearAll(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_File_LoadConfig(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_File_SaveConfig(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_File_SaveMainCfg(Fl_Widget *o, void *v);} {}
@@ -139,8 +289,26 @@ class Ep128EmuGUI {open
   decl {static void menuCallback_File_RecordVideo(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_File_StopAVIRecord(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_File_Screenshot(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_File_ScreenshotAs(Fl_Widget *o, void *v);} {}
+  decl {static void screenshotAsCallback(void *userData, const unsigned char *buf, int w, int h);} {}
+  decl {void saveScreenshot(const unsigned char *buf, int w, int h, bool saveAs);} {}
+  decl {bool checkWritableSDDBeforeShutdown();} {}
   decl {static void menuCallback_File_Quit(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_Pause(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_NextFrame(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_PreviousFrame(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_Previous100(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_Next100(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_OldestFrame(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_LatestFrame(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_RewindCapture(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_RewindHistory16(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_RewindHistory32(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_RewindHistory64(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_RestartAsEP(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_RestartAsZX(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_RestartAsCPC(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_RestartAsTVC(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_FullSpeed(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_Speed_10(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_Speed_25(Fl_Widget *o, void *v);} {}
@@ -149,7 +317,41 @@ class Ep128EmuGUI {open
   decl {static void menuCallback_Machine_Speed_200(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_Speed_400(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_OpenTape(Fl_Widget *o, void *v);} {}
+  decl {void enableSpeccyDOSROM(const std::vector<uint8_t>& rom);} {}
+  decl {static void menuCallback_Machine_SpeccyDOSBundled1770(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_SpeccyDOSBundled1772(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_SpeccyDOSROM(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_SpeccyDOSDisk(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_SpeccyDOSWriteProtect(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_SpeccyDOSEject(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_SpeccyDOSDisable(Fl_Widget *o, void *v);} {}
+  decl {void enableBetaDiskROM(const std::vector<uint8_t>& rom);} {}
+  decl {static void menuCallback_Machine_BetaDiskBundled503(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_BetaDiskBundled504(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_BetaDiskBundled604(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_BetaDiskROM(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_BetaDiskEnterDOS(Fl_Widget *o, void *v);} {}
+  decl {static void betaDOSInputCallback(void *userData);} {}
+  decl {void betaDOSInputTick();} {}
+  decl {void armBetaDOSAutoEnterIfReady();} {}
+  decl {void cancelBetaDOSAutoEnter();} {}
+  decl {static void betaDOSAutoEnterCallback(void *userData);} {}
+  decl {void betaDOSAutoEnterTick();} {}
+  decl {static void menuCallback_Machine_BetaDiskAutoEnter(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_BetaDiskTRD(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_BetaDiskWriteProtect(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_BetaDiskEject(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_BetaDiskDisable(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_PrinterCapture(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_PrinterFormatText(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_PrinterFormatRaw(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_PrinterNewFile(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_TapePlay(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_TapeForce(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_TapeSpin0(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_TapeSpin500(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_TapeSpin1000(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_TapeSpin1500(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_TapeStop(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_TapeRecord(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_TapeRewind(Fl_Widget *o, void *v);} {}
@@ -176,10 +378,16 @@ class Ep128EmuGUI {open
   decl {static void menuCallback_Options_DpySize2(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_DpySize3(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_DpyMode(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_DpyPixelPerfect(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_MenuSizeStandard(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_MenuSizeLarge(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_DpyConfig(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_RuntimeHUD(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_InformationDialogs(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_SndIncVol(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_SndDecVol(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_SndConfig(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_TapeRelayClick(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_FloppyRmA(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_FloppyRmB(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_FloppyRmC(Fl_Widget *o, void *v);} {}
@@ -193,6 +401,7 @@ class Ep128EmuGUI {open
   decl {static void menuCallback_Options_FloppyCfg(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_PPriority(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_KbdConfig(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_AppShortcuts(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_FileIODir(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Debug_OpenDebugger(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Help_About(Fl_Widget *o, void *v);} {}
@@ -207,44 +416,87 @@ class Ep128EmuGUI {open
       code0 {o->add(emulatorWindow);} size_range {384 348 1536 1182} visible
     } {
       Fl_Menu_Bar mainMenuBar {open
-        xywh {0 2 300 26} box FLAT_BOX color 48
+        xywh {0 2 380 30} box FLAT_BOX color 48
       } {}
-      Fl_Group diskStatusDisplayGroup {
-        label {Disk: } open
-        xywh {345 0 30 30} box PLASTIC_THIN_UP_BOX color 255 labelsize 12 align 4
+      Fl_Group diskStatusDisplayGroup {open
+        xywh {410 0 30 30} box PLASTIC_THIN_UP_BOX color 255
       } {
         Fl_Box driveALEDDisplay {
-          xywh {351 2 18 5} box THIN_DOWN_BOX color 56
+          xywh {416 2 18 5} box THIN_DOWN_BOX color 56
         }
         Fl_Box driveBLEDDisplay {
-          xywh {351 9 18 5} box THIN_DOWN_BOX color 56
+          xywh {416 9 18 5} box THIN_DOWN_BOX color 56
         }
         Fl_Box driveCLEDDisplay {
-          xywh {351 16 18 5} box THIN_DOWN_BOX color 56
+          xywh {416 16 18 5} box THIN_DOWN_BOX color 56
         }
         Fl_Box driveDLEDDisplay {
-          xywh {351 23 18 5} box THIN_DOWN_BOX color 56
+          xywh {416 23 18 5} box THIN_DOWN_BOX color 56
         }
       }
       Fl_Group statusDisplayGroup {open
         xywh {40 330 360 30} color 48
       } {
+        Fl_Box remCaptionDisplay {
+          label {REM:} tooltip {Enterprise tape remote outputs}
+          xywh {78 335 30 20} color 48 labelsize 11 labelcolor 0 align 16
+        }
+        Fl_Box rem1StatusDisplay {
+          tooltip {REM1 (Enterprise tape remote output)}
+          xywh {110 340 11 11} box OVAL_BOX color 56
+        }
+        Fl_Box rem1NumberDisplay {
+          label 1
+          xywh {122 335 11 20} color 48 labelsize 11 labelcolor 0 align 16
+        }
+        Fl_Box rem2StatusDisplay {
+          tooltip {REM2 (Enterprise tape remote output)}
+          xywh {136 340 11 11} box OVAL_BOX color 56
+        }
+        Fl_Box rem2NumberDisplay {
+          label 2
+          xywh {148 335 11 20} color 48 labelsize 11 labelcolor 0 align 16
+        }
         Fl_Box demoStatusDisplay1 {
           label {Demo:}
-          xywh {50 335 50 20} color 48 labelsize 12 align 20
+          xywh {50 335 50 20} color 48 labelsize 12 align 20 hide
         }
         Fl_Box demoStatusDisplay2 {
-          xywh {97 335 20 20} box THIN_DOWN_BOX color 56 labelfont 5 labelsize 12 labelcolor 6 align 16
+          xywh {171 335 14 20} box THIN_DOWN_BOX color 56 labelfont 5 labelsize 12 labelcolor 6 align 16
         }
         Fl_Box tapeInfoDisplay {
-          xywh {130 335 150 20} color 48 labelsize 12 align 16
+          xywh {191 335 106 20} color 48 labelsize 12 align 16
           code0 {o->label("Tape: none");}
         }
+        Fl_Group videoRecordStatusDisplay {open
+          xywh {144 335 150 20} box THIN_DOWN_BOX color 56 hide
+        } {
+          Fl_Box videoRecordLabelDisplay {
+            label {REC V}
+            xywh {148 335 50 20} color 56 labelfont 5 labelsize 12 labelcolor 1 align 16
+          }
+          Fl_Box videoRecordTimeDisplay {
+            label {00:00}
+            xywh {198 335 90 20} color 56 labelfont 4 labelsize 12 labelcolor 6 align 16
+          }
+        }
+        Fl_Group audioRecordStatusDisplay {open
+          xywh {144 335 150 20} box THIN_DOWN_BOX color 56 hide
+        } {
+          Fl_Box audioRecordLabelDisplay {
+            label {REC A}
+            xywh {148 335 50 20} color 56 labelfont 5 labelsize 12 labelcolor 1 align 16
+          }
+          Fl_Box audioRecordTimeDisplay {
+            label {00:00}
+            xywh {198 335 90 20} color 56 labelfont 4 labelsize 12 labelcolor 6 align 16
+          }
+        }
         Fl_Group tapePositionDisplay {open
-          xywh {290 335 100 20} box THIN_DOWN_BOX color 56 labelfont 4 labelsize 12 labelcolor 6 align 24
+          xywh {298 335 100 20} box THIN_DOWN_BOX color 56 labelfont 4 labelsize 12 labelcolor 6 align 24
         } {
           Fl_Box tapeStatusDisplay {
-            xywh {290 335 20 20} color 56 labelfont 5 labelsize 12 labelcolor 6 align 24
+            xywh {298 335 20 20} color 56 labelfont 5 labelsize 12 labelcolor 6 align 24
           }
         }
       }
@@ -273,13 +525,32 @@ class Ep128EmuGUI {open
   machineConfigWindow = new Ep128EmuGUI_MachineConfigWindow(*this);
   debugWindow = new Ep128EmuGUI_DebugWindow(*this);
   aboutWindow = new Ep128EmuGUI_AboutWindow(*this);
+  shortcutConfigWindow = new Ep128EmuGUI_ShortcutConfigWindow(*this);
 }} {}
   }
   Function {~Ep128EmuGUI()} {open
   } {
     code {{
   debugWindow->hide();
+  Fl::remove_timeout(&betaDOSInputCallback, (void *) this);
+  cancelBetaDOSAutoEnter();
+  betaDOSInputStep = -1;
   vmThread.quit(true);
+#if defined(__APPLE__) || defined(WIN32)
+  speccyDOSMountedSDDPath.clear();
+  betaDOSInputStep=-1;
+  Fl::remove_timeout(&Ep128EmuGUI::betaDOSInputCallback,(void *)this);
+  Ep128EmuBetaTrial::removeTemporary(betaDiskTemporaryDiskFile);
+  betaDiskTemporaryDiskFile.clear();
+#endif
+  // VM has stopped: flush any last acknowledged output before closing.
+  if (printerOutputFile && typeid(vm) == typeid(Ep128::Ep128VM)) {
+    std::string remaining;
+    static_cast<Ep128::Ep128VM&>(vm).drainPrinterOutput(remaining);
+    if (!remaining.empty())
+      std::fwrite(remaining.data(), 1, remaining.size(), printerOutputFile);
+  }
+  closePrinterOutputFile();
   errorMessageWindow->hide();
   diskConfigWindow->hide();
   displaySettingsWindow->hide();
@@ -287,6 +558,7 @@ class Ep128EmuGUI {open
   soundSettingsWindow->hide();
   machineConfigWindow->hide();
   aboutWindow->hide();
+  shortcutConfigWindow->hide();
   mainWindow->hide();
   Fl::remove_check(&fltkCheckCallback, (void *) this);
   Fl::wait(0.0);
@@ -300,7 +572,9 @@ class Ep128EmuGUI {open
   delete machineConfigWindow;
   delete debugWindow;
   delete aboutWindow;
+  delete shortcutConfigWindow;
   delete mainWindow;
+  restoreArchivePersistentConfiguration();
   config.vm.speedPercentage = 100U;
   config.sound.file = "";
   config.tape.imageFile = "";

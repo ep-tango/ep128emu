@@ -43,18 +43,21 @@ namespace Ep128Emu {
     struct Axis_ {
       int     devNum;
       int     axisNum;
+      void    *nativeElement;
       int     prvInputState;
       int     prvOutputState;
     };
     struct Button_ {
       int     devNum;
       int     buttonNum;
+      void    *nativeElement;
       bool    prvInputState;
       bool    prvOutputState;
     };
     struct POVHat_ {
       int     devNum;
       int     hatNum;
+      void    *nativeElement;
       int     prvState;
     };
     Axis_   axes[8];
@@ -71,10 +74,15 @@ namespace Ep128Emu {
     Timer   autoFireTimer;
     Mutex   mutex_;
     void    *sdlDevices[2];
+    void    *nativeManager;
     bool    haveJoystick;
     bool    lockFlag;
     bool    sdlInitialized;
     JoystickConfiguration config;
+    int readAxisValue(int n) const;
+    bool readButtonValue(int n) const;
+    int readHatValue(int n) const;
+    void closeMacOSDevices();
    public:
     static const int  keyCodeBase = 0xC000;
     JoystickInput(bool sdlInitFlag = false);
@@ -111,6 +119,7 @@ namespace Ep128Emu {
      */
     int getEvent(bool ignoreConfig = false, bool checkLock = true);
     void flushEvents();
+    void refreshDevices();
     void lock();
     void unlock();
     void setConfiguration(const JoystickConfiguration& config_);

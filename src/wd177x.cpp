@@ -341,9 +341,20 @@ namespace Ep128Emu {
       return;
     if ((commandRegister & 0xE0) == 0xA0 && floppyDrive->isDataTransfer()) {
       // writing sector
-      // FIXME: errors are ignored here
-      (void) floppyDrive->updateBufferedTrack();
+      if (!floppyDrive->updateBufferedTrack() &&
+          floppyDrive->requiresDurableWrite()) {
+        setError(0x08);
+        return;
+      }
       if (floppyDrive->writeByte(dataRegister)) {
+        // Native SDD direct writes are immediately persisted sector-by-sector.
+        if (floppyDrive->requiresDurableWrite() &&
+            !(floppyDrive->isNativeSDDWritable() ?
+              floppyDrive->syncNativeSDD() :
+              floppyDrive->syncWritableTRDCopy())) {
+          setError(0x08);
+          return;
+        }
         // end of sector: clear data request and busy flag
         floppyDrive->endDataTransfer();
         dataRequestFlag = false;
@@ -452,8 +463,8 @@ namespace Ep128Emu {
           else
             setError(0x14);
           break;
-        case 11:                        // sector length (must be 512 bytes)
-          if (n == 0x02)
+        case 11:                        // WD17xx sector length code
+          if (n == floppyDrive->getSectorLengthCode())
             writeTrackState = nxtState;
           else
             setError(0x04);
@@ -470,8 +481,11 @@ namespace Ep128Emu {
             setError(0x0C);
             return;
           }
-          // FIXME: errors are ignored here
-          (void) floppyDrive->updateBufferedTrack();
+          if (!floppyDrive->updateBufferedTrack() &&
+              floppyDrive->requiresDurableWrite()) {
+            setError(0x08);
+            return;
+          }
           if (floppyDrive->writeByte(dataRegister))
             writeTrackState = nxtState;
           break;
@@ -486,9 +500,10 @@ namespace Ep128Emu {
             writeTrackState = nxtState;     // done formatting all sectors
             if (writeTrackState == 31) {
               // done formatting track
-              // FIXME: errors are ignored here
-              (void) floppyDrive->flushTrack();
-              setError();
+              const bool ok = (floppyDrive->isWritableTRDCopy() ?
+                                   floppyDrive->syncWritableTRDCopy() :
+                                   floppyDrive->flushTrack());
+              setError((!ok && floppyDrive->requiresDurableWrite()) ? 0x08 : 0);
             }
           }
           break;
@@ -504,8 +519,12 @@ namespace Ep128Emu {
       return dataRegister;
     if ((commandRegister & 0xE0) == 0x80) {
       // reading sector
-      // FIXME: errors are ignored here
-      (void) floppyDrive->updateBufferedTrack();
+      if (!floppyDrive->updateBufferedTrack() &&
+          floppyDrive->requiresDurableWrite()) {
+        setError(0x08);
+        dataRegister = 0;
+        return 0;
+      }
       if (!floppyDrive->getSectorData()) {
         setError(0x08);                 // CRC error
         dataRegister = 0x00;
@@ -539,7 +558,7 @@ namespace Ep128Emu {
         dataRegister = 0x01;            // assume first sector of track
         break;
       case 3L:
-        dataRegister = 0x02;            // 512 bytes per sector
+        dataRegister = floppyDrive->getSectorLengthCode();
         break;
       case 4L:                          // CRC high byte
       case 5L:                          // CRC low byte
@@ -548,7 +567,7 @@ namespace Ep128Emu {
           tmpBuf[0] = floppyDrive->getCurrentTrack();
           tmpBuf[1] = floppyDrive->getCurrentSide();
           tmpBuf[2] = 0x01;
-          tmpBuf[3] = 0x02;
+          tmpBuf[3] = floppyDrive->getSectorLengthCode();
           uint16_t  tmp = calculateCRC(&(tmpBuf[0]), 4, 0xB230);
           if (floppyDrive->getSectorBufferPosition() == 4L)
             dataRegister = uint8_t(tmp >> 8);

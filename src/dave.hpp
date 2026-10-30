@@ -135,6 +135,7 @@ namespace Ep128 {
     int     int_1_active;
     int     int_2_active;
     uint32_t  audioOutput;
+    bool      rewindRestoreMode;
     uint8_t page0Segment;
     uint8_t page1Segment;
     uint8_t page2Segment;
@@ -248,6 +249,10 @@ namespace Ep128 {
      */
     void saveState(Ep128Emu::File::Buffer&);
     void saveState(Ep128Emu::File&);
+    inline void setRewindRestoreMode(bool enabled)
+    {
+      rewindRestoreMode = enabled;
+    }
     /*!
      * Load snapshot.
      */

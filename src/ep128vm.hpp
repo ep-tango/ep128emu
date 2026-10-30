@@ -40,6 +40,7 @@
 #endif
 
 #include <map>
+#include <deque>
 
 namespace Ep128Emu {
   class VideoCapture;
@@ -83,6 +84,10 @@ namespace Ep128 {
       void writeUserMemory(uint16_t addr, uint8_t value);
      public:
       void closeAllFiles();
+      void setDefaultDeviceIsFILE(bool isFILE)
+      {
+        defaultDeviceIsFILE = isFILE;
+      }
     };
     class Memory_ : public Memory {
      private:
@@ -150,9 +155,30 @@ namespace Ep128 {
     uint8_t   singleStepMode;
     int32_t   singleStepModeNextAddr;
     bool      tapeCallbackFlag;
+    // EF04C: purely host-side motor inertia, counted in source tape samples.
+    // Not part of the public snapshot format (preserved via rewind runtime).
+    uint32_t  tapeMotorSpinUpDelayMs;
+    uint32_t  tapeSpinUpSamplesRemaining;
+    bool      tapeSpinUpRewindRestored;
+    // True when a real DAVE REM edge already armed the countdown this run.
+    bool      tapeSpinUpRemoteArmed;
+    // EF04G: sound-only REM debounce. The emulated tape motor remains
+    // electrically immediate, including the accepted 0.34 spin-up timing.
+    uint32_t  tapeRelayReleaseDelayMs;
+    uint32_t  tapeRelayPendingNickCycles;
+    uint32_t  tapeRelayEngagementCount;
+    bool      tapeRelaySoundArmed;
     // bit 0: 1 if remote 1 is on
     // bit 1: 1 if remote 2 is on
     uint8_t   remoteControlState;
+    // EF05: portable Centronics-style printer; Z80 writer never does host I/O.
+    uint8_t   printerDataLatch;
+    bool      printerStrobeActive;
+    bool      printerCaptureEnabled;
+    bool      printerDeviceConnected;
+    std::deque<uint8_t> printerOutputQueue;
+    uint64_t  printerOverflowCount;
+    static const size_t printerQueueLimit = 65536U;
     uint32_t  soundOutputSignal;
     uint32_t  externalDACOutput;
     Ep128Emu::File  *demoFile;
@@ -177,6 +203,9 @@ namespace Ep128 {
     // true after loading a snapshot; if not playing a demo as well, the
     // keyboard state will be cleared
     bool      snapshotLoadFlag;
+    // true only while VMThread restores an in-memory rewind state; this
+    // suppresses normal snapshot-load external I/O side effects.
+    bool      rewindRestoreMode;
     // used for counting time between demo events (in NICK cycles)
     uint64_t  demoTimeCnt;
     // floppy drives
@@ -252,6 +281,7 @@ namespace Ep128 {
     static uint8_t davePortReadCallback(void *userData, uint16_t addr);
     static void davePortWriteCallback(void *userData,
                                       uint16_t addr, uint8_t value);
+    void writePrinterStrobe(uint8_t value);
     static uint8_t nickPortReadCallback(void *userData, uint16_t addr);
     static void nickPortWriteCallback(void *userData,
                                       uint16_t addr, uint8_t value);
@@ -289,6 +319,10 @@ namespace Ep128 {
 #endif
     static void mouseTimerCallback(void *userData);
     static void tapeCallback(void *userData);
+    void onTapeRemoteMotorTransition(bool previouslyOn);
+    void onTapeRemoteCommandChange(bool previousRemoteOn);
+    static void tapeRelayReleaseCallback(void *userData);
+    void cancelPendingTapeRelayRelease();
     static void demoPlayCallback(void *userData);
     static void demoRecordCallback(void *userData);
     static void videoCaptureCallback(void *userData);
@@ -313,6 +347,13 @@ namespace Ep128 {
      * Run emulation for the specified number of microseconds.
      */
     virtual void run(size_t microseconds);
+    // Capture can be disabled without disconnecting the virtual printer.
+    // Call the drain and option setters only while VMThread is locked.
+    void setPrinterCaptureEnabled(bool enabled);
+    bool getPrinterCaptureEnabled() const { return printerCaptureEnabled; }
+    size_t getPrinterOutputPending() const { return printerOutputQueue.size(); }
+    uint64_t getPrinterOverflowCount() const { return printerOverflowCount; }
+    void drainPrinterOutput(std::string& data);
     /*!
      * Reset emulated machine; if 'isColdReset' is true, RAM is cleared.
      */
@@ -367,6 +408,15 @@ namespace Ep128 {
      */
     virtual void setKeyboardState(int keyCode, bool isPressed);
     /*!
+     * Set the default EXOS device used by EPFileIO when a guest file name
+     * does not explicitly specify a device. This is the host-side equivalent
+     * of the EXOS DEF_DEV_FILE command.
+     */
+    virtual void setFileIODefaultDevice(bool isFILE)
+    {
+      z80.setDefaultDeviceIsFILE(isFILE);
+    }
+    /*!
      * Send mouse event to the emulated machine. 'dX' and 'dY' are the
      * horizontal and vertical motion of the pointer relative to the position
      * at the time of the previous call, positive values move to the left and
@@ -404,7 +454,8 @@ namespace Ep128 {
             (void (*)(void *, const char *)) 0,
         void (*fileNameCallback_)(void *userData, std::string& fileName) =
             (void (*)(void *, std::string&)) 0,
-        void *userData_ = (void *) 0);
+        void *userData_ = (void *) 0,
+        bool preserveAllVideoFrames_ = false);
     /*!
      * Set output file name for video capture (an empty file name means no
      * file is written). openVideoCapture() should be called first.
@@ -439,7 +490,8 @@ namespace Ep128 {
      */
     virtual void setDiskImageFile(int n, const std::string& fileName_,
                                   int nTracks_ = -1, int nSides_ = 2,
-                                  int nSectorsPerTrack_ = 9);
+                                  int nSectorsPerTrack_ = 9,
+                                  int bytesPerSector_ = 512);
     /*!
      * Returns the current state of the disk drive LEDs, which is the sum
      * of any of the following values:
@@ -652,6 +704,26 @@ namespace Ep128 {
      * playing a demo.
      */
     virtual bool getIsPlayingDemo() const;
+    virtual bool getIsRewindRestoreSupported() const;
+    virtual bool getRewindRuntimeState(
+        Ep128Emu::VirtualMachine::RewindRuntimeState& state) const;
+    virtual bool restoreRewindRuntimeState(
+        const Ep128Emu::VirtualMachine::RewindRuntimeState& state);
+    virtual void setRewindRestoreMode(bool enabled);
+    void setTapeMotorSpinUpDelayMs(uint32_t ms);
+    // Audio-only suppression; zero disables the click debounce.
+    // 20 ms remains experimental, NOT a hardware measurement.
+    void setTapeRelayReleaseDelayMs(uint32_t ms);
+    uint32_t getTapeRelayReleaseDelayMs() const
+    { return tapeRelayReleaseDelayMs; }
+    uint32_t getTapeRelayEngagementCount() const
+    { return tapeRelayEngagementCount; }
+    uint32_t getTapeRelayPendingNickCycles() const
+    { return tapeRelayPendingNickCycles; }
+    uint32_t getTapeMotorSpinUpDelayMs() const
+    { return tapeMotorSpinUpDelayMs; }
+    uint32_t getTapeSpinUpSamplesRemaining() const
+    { return tapeSpinUpSamplesRemaining; }
     // ----------------
     virtual void loadState(Ep128Emu::File::Buffer&);
     virtual void loadMachineConfiguration(Ep128Emu::File::Buffer&);

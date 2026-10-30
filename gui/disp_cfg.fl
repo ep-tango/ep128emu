@@ -415,6 +415,8 @@ class Ep128EmuGUI_DisplayConfigWindow {open
   } {
     code {{
   updateWindow();
+  if (!window->shown())
+    gui.positionAuxiliaryWindow(window);
   window->show();
 }} {}
   }

@@ -27,6 +27,7 @@
 #include "snd_conv.hpp"
 #include "soundio.hpp"
 #include "tape.hpp"
+#include <vector>
 
 namespace Ep128 {
   struct Z80_REGISTERS;
@@ -76,6 +77,16 @@ namespace Ep128Emu {
     void            (*fileNameCallback)(void *userData, std::string& fileName);
     void            *fileNameCallbackUserData;
    public:
+    struct RewindRuntimeState {
+      uint32_t  cyclePhaseLow;
+      int32_t   cyclePhaseHigh;
+      std::vector<unsigned char> machineData;
+      bool      valid;
+      RewindRuntimeState()
+        : cyclePhaseLow(0U), cyclePhaseHigh(0), machineData(), valid(false)
+      {
+      }
+    };
     struct VMStatus {
       bool      isRecordingDemo;
       bool      isPlayingDemo;
@@ -102,6 +113,11 @@ namespace Ep128Emu {
       //   0x04000000: IDE drive 3 red LED is on (low priority)
       //   0x0C000000: IDE drive 3 red LED is on (high priority)
       uint32_t  floppyDriveLEDState;
+      // independent Enterprise DAVE remote relay outputs (bit 0/1)
+      uint8_t   tapeRemoteState;
+      // Number of Enterprise mechanical relay engagements observed this VM
+      // session. Independent of GUI polling and raw REM1/REM2 LED edges.
+      uint32_t  tapeMechanicalEngagementCount = 0U;
     };
     // --------
     VirtualMachine(VideoDisplay& display_, AudioOutput& audioOutput_);
@@ -183,10 +199,18 @@ namespace Ep128Emu {
      * this also makes the emulation run faster than real time).
      */
     virtual void setEnableAudioOutput(bool isEnabled);
+    inline bool getEnableAudioOutput() const
+    {
+      return audioOutputEnabled;
+    }
     /*!
      * Set if video data is sent to the associated VideoDisplay object.
      */
     virtual void setEnableDisplay(bool isEnabled);
+    inline bool getEnableDisplay() const
+    {
+      return displayEnabled;
+    }
     /*!
      * Set CPU clock frequency (in Hz).
      */
@@ -245,7 +269,8 @@ namespace Ep128Emu {
             (void (*)(void *, const char *)) 0,
         void (*fileNameCallback_)(void *userData, std::string& fileName) =
             (void (*)(void *, std::string&)) 0,
-        void *userData_ = (void *) 0);
+        void *userData_ = (void *) 0,
+        bool preserveAllVideoFrames_ = false);
     /*!
      * Set output file name for video capture (an empty file name means no
      * file is written). openVideoCapture() should be called first.
@@ -280,7 +305,8 @@ namespace Ep128Emu {
      */
     virtual void setDiskImageFile(int n, const std::string& fileName_,
                                   int nTracks_ = -1, int nSides_ = 2,
-                                  int nSectorsPerTrack_ = 9);
+                                  int nSectorsPerTrack_ = 9,
+                                  int bytesPerSector_ = 512);
     /*!
      * Returns the current state of the disk drive LEDs, which is the sum
      * of any of the following values:
@@ -313,6 +339,12 @@ namespace Ep128Emu {
      * working directory.
      */
     virtual void setEnableFileIO(bool isEnabled);
+    /*!
+     * Set the default emulated file device where the machine supports one.
+     * The base implementation is a no-op; Enterprise overrides this for
+     * EPFileIO's FILE: default-device state.
+     */
+    virtual void setFileIODefaultDevice(bool isFILE);
     /*!
      * Set directory for files to be saved and loaded by the emulated machine.
      */
@@ -624,6 +656,22 @@ namespace Ep128Emu {
      * playing a demo.
      */
     virtual bool getIsPlayingDemo() const;
+    /*!
+     * True if this machine implementation has a rewind-safe state restore
+     * path that does not perform normal snapshot-load external-I/O resets.
+     */
+    virtual bool getIsRewindRestoreSupported() const;
+    /*!
+     * Save/restore runtime timing phase that is intentionally not part of
+     * normal snapshot files but is required for cycle-stable rewind.
+     */
+    virtual bool getRewindRuntimeState(RewindRuntimeState& state) const;
+    virtual bool restoreRewindRuntimeState(const RewindRuntimeState& state);
+    /*!
+     * Enable/disable rewind restore semantics around in-memory state loading.
+     * Unsupported machine types ignore this setting.
+     */
+    virtual void setRewindRestoreMode(bool enabled);
     // ----------------
     virtual void loadState(File::Buffer& buf);
     virtual void loadMachineConfiguration(File::Buffer& buf);

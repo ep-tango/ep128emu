@@ -19,9 +19,13 @@
 
 #include "ep128emu.hpp"
 #include "ep_fdd.hpp"
+#include "sdd_journal.hpp"
 #include "system.hpp"
 
 #include <vector>
+#ifndef WIN32
+#  include <unistd.h> // fsync for original-SDD durability
+#endif
 
 #ifdef WIN32
 #  include <windows.h>
@@ -192,9 +196,16 @@ namespace Ep128Emu {
       nTracks(0),
       nSides(0),
       nSectorsPerTrack(0),
+      bytesPerSector(512),
       currentTrack(0),
       currentSide(0),
       writeProtectFlag(false),
+      userWriteProtected(false),
+      sideMajorSDDReadOnly(false),
+      nativeSDDWritable(false),
+      nativeSDDWriteError(false),
+      writableTRDCopy(false),
+      writableTRDWriteError(false),
       diskChangeFlag(false),
       bufferedTrack(0xFF),
       bufferedSide(0xFF),
@@ -213,7 +224,12 @@ namespace Ep128Emu {
 
   FloppyDrive::~FloppyDrive()
   {
-    closeDiskImage();
+    try { closeDiskImage(); }
+    catch (...) {
+      // Never throw from a destructor; the GUI checks flush before eject.
+      if (imageFile) std::fclose(imageFile);
+      imageFile = (std::FILE *) 0;
+    }
   }
 
   void FloppyDrive::doStep(int n)
@@ -231,7 +247,7 @@ namespace Ep128Emu {
           sectorNum >= 1 && sectorNum <= nSectorsPerTrack)) {
       return false;
     }
-    bufPos = long(sectorNum - 1) << 9;
+    bufPos = long(sectorNum - 1) * long(bytesPerSector);
     return true;
   }
 
@@ -239,13 +255,25 @@ namespace Ep128Emu {
   {
     if (!imageFile)
       return;
-    (void) flushTrack();                // FIXME: errors are ignored here
+    if (nativeSDDWritable && !syncNativeSDD())
+      throw Exception("FDD: writable SDD flush failed; disk remains mounted");
+    if (writableTRDCopy && !syncWritableTRDCopy())
+      throw Exception("FDD: writable TRD copy flush failed; disk remains mounted");
+    if (!nativeSDDWritable && !writableTRDCopy)
+      (void) flushTrack();           // legacy floppy semantics
     std::fclose(imageFile);
     imageFile = (std::FILE *) 0;
     nTracks = 0;
     nSides = 0;
     nSectorsPerTrack = 0;
+    bytesPerSector = 512;
     writeProtectFlag = false;
+    userWriteProtected = false;
+    sideMajorSDDReadOnly = false;
+    nativeSDDWritable = false;
+    nativeSDDWriteError = false;
+    writableTRDCopy = false;
+    writableTRDWriteError = false;
     bufferedTrack = 0xFF;
     bufferedSide = 0xFF;
     trackBuffer = (uint8_t *) 0;
@@ -257,13 +285,42 @@ namespace Ep128Emu {
 
   void FloppyDrive::setDiskImageFile(const std::string& fileName_,
                                      int nTracks_, int nSides_,
-                                     int nSectorsPerTrack_)
+                                     int nSectorsPerTrack_, int bytesPerSector_,
+                                     bool sideMajorSDDReadOnly_,
+                                     bool nativeSDDWritable_,
+                                     bool writableTRDCopy_)
   {
+    // Native SDD mode cannot be selected by ordinary EP/TVC/TRD drives.
+    // Restrict this initial SpeccyDOS trial to the accepted 640 KiB layout.
+    if (writableTRDCopy_ &&
+        (sideMajorSDDReadOnly_ || nativeSDDWritable_ ||
+         !((nTracks_ == 80 && nSides_ == 2) ||
+           (nTracks_ == 40 && nSides_ == 1)) ||
+         nSectorsPerTrack_ != 16 || bytesPerSector_ != 256))
+      throw Exception("FDD: writable TRD copy requires exact 80x2 or 40x1 geometry");
+    if (sideMajorSDDReadOnly_ && nativeSDDWritable_)
+      throw Exception("FDD: SDD cannot be both read-only and writable");
+    // A pending crash-recovery record is never replayed automatically.
+    // Refuse both native RW and native RO mounts until manually inspected.
+    if (!fileName_.empty() && (sideMajorSDDReadOnly_ || nativeSDDWritable_) &&
+        SDDJournal::pending(fileName_))
+      throw Exception("FDD: pending SDD recovery journal; resolve it before mounting");
+    if ((sideMajorSDDReadOnly_ || nativeSDDWritable_) &&
+        (nTracks_ != 80 || nSides_ != 2 ||
+         nSectorsPerTrack_ != 16 || bytesPerSector_ != 256))
+      throw Exception("FDD: native SpeccyDOS SDD requires 80x2x16x256");
+    if (bytesPerSector_ != 128 && bytesPerSector_ != 256 &&
+        bytesPerSector_ != 512 && bytesPerSector_ != 1024)
+      throw Exception("FDD: sector size must be 128, 256, 512 or 1024");
     if ((fileName_ == "" && imageFileName == "") ||
         (fileName_ == imageFileName &&
          nTracks_ == int(nTracks) &&
          nSides_ == int(nSides) &&
-         nSectorsPerTrack_ == int(nSectorsPerTrack))) {
+         nSectorsPerTrack_ == int(nSectorsPerTrack) &&
+         bytesPerSector_ == int(bytesPerSector) &&
+         sideMajorSDDReadOnly_ == sideMajorSDDReadOnly &&
+         nativeSDDWritable_ == nativeSDDWritable &&
+         writableTRDCopy_ == writableTRDCopy)) {
       return;
     }
     diskChangeFlag = true;
@@ -282,6 +339,10 @@ namespace Ep128Emu {
       int     diskType = checkFloppyDisk(fileName_.c_str(),
                                          nTracks_, nSides_, nSectorsPerTrack_);
       if (diskType > 0) {
+        // Physical disk geometry is separately queried by the OS and
+        // currently supports only its native 512-byte sector devices.
+        if (bytesPerSector_ != 512)
+          throw Exception("FDD: non-512 sector size on physical device");
         writeProtectFlag = (diskType == 1);
         nTracksValid = true;
         nSidesValid = true;
@@ -296,8 +357,10 @@ namespace Ep128Emu {
       }
     }
     try {
-      if (!writeProtectFlag)
+      if (!writeProtectFlag && !sideMajorSDDReadOnly_)
         imageFile = std::fopen(fileName_.c_str(), "r+b");
+      if (!imageFile && (nativeSDDWritable_ || writableTRDCopy_))
+        throw Exception("FDD: original SDD cannot be opened for read/write");
       if (!imageFile) {
         imageFile = std::fopen(fileName_.c_str(), "rb");
         if (imageFile)
@@ -305,12 +368,16 @@ namespace Ep128Emu {
         else
           throw Exception("FDD: error opening disk image file");
       }
+      if (sideMajorSDDReadOnly_)
+        writeProtectFlag = true;  // never expose a writable original SDD
       std::setvbuf(imageFile, (char *) 0, _IONBF, 0);
       long    fileSize = -1L;
       if (std::fseek(imageFile, 0L, SEEK_END) >= 0)
         fileSize = std::ftell(imageFile);
-      if (fileSize >= 512L && fileSize <= (254L * 2L * 240L * 512L)) {
-        long    nSectors_ = fileSize / 512L;
+      if (fileSize >= long(bytesPerSector_) &&
+          fileSize <= (254L * 2L * 240L * 1024L) &&
+          (fileSize % long(bytesPerSector_)) == 0L) {
+        long    nSectors_ = fileSize / long(bytesPerSector_);
         if (!nTracksValid && nSidesValid && nSectorsPerTrackValid) {
           nTracks_ = int(nSectors_ / (long(nSides_) * long(nSectorsPerTrack_)));
           nTracksValid = true;
@@ -324,8 +391,12 @@ namespace Ep128Emu {
           nSectorsPerTrackValid = true;
         }
       }
-      // try to find out geometry parameters from FAT filesystem
-      if (!disableFATCheck && std::fseek(imageFile, 0L, SEEK_SET) >= 0) {
+      // Try to infer geometry from FAT BPB, but never reinterpret an
+      // unambiguous FAT image using a conflicting manually selected size.
+      // Only explicit non-512 requests add this check: unchanged default
+      // 512-byte image compatibility remains exactly as before.
+      if ((!disableFATCheck || bytesPerSector_ != 512) &&
+          std::fseek(imageFile, 0L, SEEK_SET) >= 0) {
         if (std::fread(&(tmpBuf[0]), 1, 512, imageFile) == 512) {
           int     fatSectorSize = int(tmpBuf[0x0B]) | (int(tmpBuf[0x0C]) << 8);
           long    fatSectors = long(tmpBuf[0x13]) | (long(tmpBuf[0x14]) << 8);
@@ -337,10 +408,26 @@ namespace Ep128Emu {
           int     fatSides = int(tmpBuf[0x1A]) | (int(tmpBuf[0x1B]) << 8);
           int     fatSectorsPerTrack =
               int(tmpBuf[0x18]) | (int(tmpBuf[0x19]) << 8);
-          if ((tmpBuf[0x15] == 0xF0 || tmpBuf[0x15] >= 0xF8) &&
+          bool plausibleFAT = ((tmpBuf[0x15] == 0xF0 ||
+                                tmpBuf[0x15] >= 0xF8) &&
+                               (tmpBuf[0x0D] & 0x7F) != 0 &&
+                               (tmpBuf[0x0D] & (tmpBuf[0x0D] - 1)) == 0 &&
+                               (fatSectorSize == 128 || fatSectorSize == 256 ||
+                                fatSectorSize == 512 || fatSectorSize == 1024) &&
+                               fatSectors > 0 && fatSides >= 1 &&
+                               fatSides <= 2 && fatSectorsPerTrack >= 1 &&
+                               fatSectorsPerTrack <= 240 &&
+                               fatSectors * long(fatSectorSize) == fileSize);
+          if (bytesPerSector_ != 512 && plausibleFAT &&
+              fatSectorSize != bytesPerSector_) {
+            throw Exception("FDD: selected sector size conflicts "
+                            "with FAT boot sector");
+          }
+          if (!disableFATCheck &&
+              (tmpBuf[0x15] == 0xF0 || tmpBuf[0x15] >= 0xF8) &&
               (tmpBuf[0x0D] & 0x7F) != 0 &&
               (tmpBuf[0x0D] & (tmpBuf[0x0D] - 1)) == 0 &&
-              fatSectorSize == 512 && fatSectors >= 1L &&
+              fatSectorSize == bytesPerSector_ && fatSectors >= 1L &&
               fatSides >= 1 && fatSides <= 2 &&
               fatSectorsPerTrack >= 1 && fatSectorsPerTrack <= 240) {
             if ((fatSectors % long(fatSides * fatSectorsPerTrack)) == 0L) {
@@ -368,23 +455,27 @@ namespace Ep128Emu {
             nSides_ >= 1 && nSides_ <= 2 &&
             nSectorsPerTrack_ >= 1 && nSectorsPerTrack_ <= 240)) {
         if (!(nTracksValid | nSidesValid | nSectorsPerTrackValid
-              | (fileSize != (80L * 2 * 9 * 512)))) {
+              | (fileSize != (80L * 2 * 9 * long(bytesPerSector_))))) {
           nTracks_ = 80;
           nSides_ = 2;
           nSectorsPerTrack_ = 9;
         }
         else {
-          throw Exception("FDD: cannot determine size of disk image");
+          throw Exception("FDD: cannot determine disk geometry; "
+                          "set Tracks, Sides and Sectors per track explicitly "
+                          "(or use an unambiguous FAT image)");
         }
       }
-      fileSize = long(nTracks_ * nSides_) * long(nSectorsPerTrack_) * 512L;
-      bool    err = true;
-      if (std::fseek(imageFile, fileSize - 512L, SEEK_SET) >= 0) {
-        if (std::fread(&(tmpBuf[0]), 1, 512, imageFile) == 512) {
-          if (std::fread(&(tmpBuf[0]), 1, 512, imageFile) == 0) {
-            err = false;
-          }
-        }
+      fileSize = long(nTracks_ * nSides_) * long(nSectorsPerTrack_)
+                 * long(bytesPerSector_);
+      // Check exact image length even for a one-sector 128/256-byte
+      // fixture. Do not seek 512 bytes before EOF when the file is shorter.
+      bool err = true;
+      const size_t tailBytes = size_t(fileSize < 512L ? fileSize : 512L);
+      if (std::fseek(imageFile, fileSize - long(tailBytes), SEEK_SET) >= 0) {
+        if (std::fread(&(tmpBuf[0]), 1, tailBytes, imageFile) == tailBytes &&
+            std::fread(&(tmpBuf[0]), 1, 1, imageFile) == 0)
+          err = false;
       }
       if (err) {
         throw Exception("FDD: invalid or inconsistent "
@@ -392,7 +483,10 @@ namespace Ep128Emu {
       }
       std::fseek(imageFile, 0L, SEEK_SET);
       imageFileName = fileName_;
-      buf_.resize(size_t(nSectorsPerTrack_) * 257);
+      // Track cache: DATA + 4 bytes flags/sector + TMP DATA.
+      // In uint32_t words: (2 * sectorBytes + 4) / 4.
+      buf_.resize(size_t(nSectorsPerTrack_) *
+                  (size_t(bytesPerSector_) / 2U + 1U));
     }
     catch (...) {
       closeDiskImage();
@@ -401,21 +495,28 @@ namespace Ep128Emu {
     nTracks = uint8_t(nTracks_);
     nSides = uint8_t(nSides_);
     nSectorsPerTrack = uint8_t(nSectorsPerTrack_);
+    bytesPerSector = uint16_t(bytesPerSector_);
+    sideMajorSDDReadOnly = sideMajorSDDReadOnly_;
+    nativeSDDWritable = nativeSDDWritable_;
+    nativeSDDWriteError = false;
+    writableTRDCopy = writableTRDCopy_;
+    writableTRDWriteError = false;
     trackBuffer = reinterpret_cast< uint8_t * >(&(buf_.front()));
-    flagsBuffer = &(trackBuffer[size_t(nSectorsPerTrack) * 512]);
-    tmpBuffer = &(trackBuffer[size_t(nSectorsPerTrack) * 516]);
+    flagsBuffer = &(trackBuffer[size_t(nSectorsPerTrack) *
+                                  size_t(bytesPerSector)]);
+    tmpBuffer = &(flagsBuffer[size_t(nSectorsPerTrack) * 4U]);
     clearFlagsBuffer();
     this->reset();
   }
 
   void FloppyDrive::padSector()
   {
-    if (bufPos < 0L || !(bufPos & 511L))
+    if (bufPos < 0L || (bufPos % long(bytesPerSector)) == 0L)
       return;
     do {
       trackBuffer[bufPos] = 0x00;
       bufPos++;
-    } while (bufPos & 511L);
+    } while ((bufPos % long(bytesPerSector)) != 0L);
     bufPos = -1L;
   }
 
@@ -423,10 +524,10 @@ namespace Ep128Emu {
   {
     if (n < 1 || n > int(nSectorsPerTrack) || flagsBuffer[n - 1] != 0x00)
       return;
-    size_t    offs = size_t(n - 1) * 512;
+    size_t    offs = size_t(n - 1) * size_t(bytesPerSector);
     uint32_t  *srcPtr = reinterpret_cast< uint32_t * >(&(tmpBuffer[offs]));
     uint32_t  *dstPtr = reinterpret_cast< uint32_t * >(&(trackBuffer[offs]));
-    for (size_t i = 0; i < 128; i += 4) {
+    for (size_t i = 0; i < (size_t(bytesPerSector) / 4U); i += 4) {
       dstPtr[i] = srcPtr[i];
       dstPtr[i + 1] = srcPtr[i + 1];
       dstPtr[i + 2] = srcPtr[i + 2];
@@ -454,7 +555,8 @@ namespace Ep128Emu {
   void FloppyDrive::clearBuffer(uint8_t *buf)
   {
     uint32_t  *p = reinterpret_cast< uint32_t * >(buf);
-    size_t    n = size_t(nSectorsPerTrack) * 128;
+    size_t    n = size_t(nSectorsPerTrack) *
+                  (size_t(bytesPerSector) / 4U);
     uint32_t  c = 0U;
     for (size_t i = 0; i < n; i += 4) {
       p[i] = c;
@@ -467,6 +569,8 @@ namespace Ep128Emu {
   bool FloppyDrive::updateBufferedTrack_()
   {
     bool    retval = flushTrack();
+    if (requiresDurableWrite() && !retval)
+      return false;                 // retain dirty data on I/O failure
     bufferedTrack = currentTrack;
     bufferedSide = currentSide;
     clearFlagsBuffer();
@@ -493,11 +597,14 @@ namespace Ep128Emu {
       return (!errorFlag);
     clearBuffer(tmpBuffer);
     if (!errorFlag) {
-      size_t  offs = size_t(firstSector - 1) * 512;
-      size_t  nBytes = size_t(lastSector + 1 - firstSector) * 512;
-      long    filePos = (long(currentTrack) * long(nSides) + long(currentSide))
-                        * long(nSectorsPerTrack);
-      filePos = (filePos * 512L) + long(offs);
+      size_t  offs = size_t(firstSector - 1) * size_t(bytesPerSector);
+      size_t  nBytes = size_t(lastSector + 1 - firstSector) *
+                       size_t(bytesPerSector);
+      const long trackIndex = (sideMajorSDDReadOnly || nativeSDDWritable) ?
+          (long(currentSide) * long(nTracks) + long(currentTrack)) :
+          (long(currentTrack) * long(nSides) + long(currentSide));
+      long    filePos = trackIndex * long(nSectorsPerTrack);
+      filePos = (filePos * long(bytesPerSector)) + long(offs);
       if (std::fseek(imageFile, filePos, SEEK_SET) < 0) {
         errorFlag = true;
       }
@@ -512,10 +619,141 @@ namespace Ep128Emu {
     return (!errorFlag);
   }
 
+  bool FloppyDrive::syncNativeSDDFile()
+  {
+    if (!imageFile) return false;
+#ifdef EP128EMU_SDD_RW_FAULT_TEST
+    // Only compiled into isolated host-media regression binaries, never the
+    // distributed emulator. Reproduces durable sync errors deterministically.
+    const char *fault = std::getenv("EP128EMU_TEST_SDD_SYNC_FAULT");
+    if (fault && *fault == '1') return false;
+#endif
+#ifdef WIN32
+    // Win32 disk FILE* is a HANDLE in ep_fdd.cpp's historical adapter.
+    return FlushFileBuffers(HANDLE(imageFile)) != FALSE;
+#else
+    return (std::fflush(imageFile) == 0 && ::fsync(fileno(imageFile)) == 0);
+#endif
+  }
+
+  bool FloppyDrive::syncNativeSDD()
+  {
+    if (!nativeSDDWritable) return true;
+    if (!flushTrack() || !syncNativeSDDFile() ||
+        SDDJournal::pending(imageFileName)) {
+      nativeSDDWriteError = true;
+      return false;
+    }
+    nativeSDDWriteError = false;
+    return true;
+  }
+
+  bool FloppyDrive::syncWritableTRDCopy()
+  {
+    if (!writableTRDCopy) return true;
+    if (!flushTrack() || !syncNativeSDDFile()) {
+      writableTRDWriteError = true;
+      return false;
+    }
+    writableTRDWriteError = false;
+    return true;
+  }
+
   bool FloppyDrive::flushTrack()
   {
     if (!trackDirtyFlag)
       return true;
+    if (nativeSDDWritable || writableTRDCopy) {
+      if (!imageFile || writeProtectFlag || bufferedTrack >= nTracks ||
+          bufferedSide >= nSides) {
+        if (nativeSDDWritable) nativeSDDWriteError = true;
+        if (writableTRDCopy) writableTRDWriteError = true;
+        return false;
+      }
+      for (size_t i = 0; i < size_t(nSectorsPerTrack); i++) {
+        if (!(flagsBuffer[i] & 0x80)) continue;
+        const size_t offs = i * size_t(bytesPerSector);
+        const long pos =
+            ((nativeSDDWritable ?
+                (long(bufferedSide)*long(nTracks)+long(bufferedTrack)) :
+                (long(bufferedTrack)*long(nSides)+long(bufferedSide))) *
+               long(nSectorsPerTrack)+long(i)) * long(bytesPerSector);
+        if (writableTRDCopy) {
+#ifdef EP128EMU_TRD_COPY_FAULT_TEST
+          // Synthetic-only deterministic failure before touching copy bytes.
+          // The pending in-memory track remains dirty until an explicit retry.
+          const char* fault = std::getenv("EP128EMU_TEST_TRD_WRITE_FAULT");
+          if (fault && *fault == '1') {
+            writableTRDWriteError=true;
+            return false;
+          }
+#endif
+          // Raw TRD uses normal track-major layout, on a PRIVATE output file.
+          // No write-ahead record on this still-experimental copy mode;
+          // a failed host write retains the dirty track and rejects eject.
+          if (std::fseek(imageFile,pos,SEEK_SET)!=0 ||
+              std::fwrite(&(trackBuffer[offs]),1,bytesPerSector,imageFile)
+                  != bytesPerSector || !syncNativeSDDFile()) {
+            writableTRDWriteError=true;
+            return false;
+          }
+          flagsBuffer[i] &= uint8_t(0x01);
+          continue;
+        }
+        // Write-ahead record MUST reach durable storage before original
+        // sector bytes are touched. Record both old and intended payload.
+        SDDJournal::Record record = {};
+        record.offset=uint32_t(pos);
+        std::memcpy(record.desired,&(trackBuffer[offs]),256);
+        if (SDDJournal::pending(imageFileName)) {
+          SDDJournal::Record prior = {};
+          if (!SDDJournal::read(imageFileName,prior) ||
+              prior.offset!=record.offset ||
+              std::memcmp(prior.desired,record.desired,256)!=0) {
+            nativeSDDWriteError=true;
+            return false;
+          }
+          // A retry must not overwrite a disk edited elsewhere after the
+          // pending record was created. Target sector may legitimately be
+          // OLD, NEW or partially written; other sectors must be unchanged.
+          std::vector<uint8_t> current(655360U);
+          if (std::fseek(imageFile,0L,SEEK_SET)!=0 ||
+              std::fread(current.data(),1,current.size(),imageFile)!=current.size() ||
+              SDDJournal::hashOtherSectors(current.data(),current.size(),
+                                           prior.offset)!=prior.otherSectorsHash) {
+            nativeSDDWriteError=true;
+            return false;
+          }
+          record=prior;              // safe retry after transient sync error
+        }
+        else {
+          std::vector<uint8_t> image(655360U);
+          if (std::fseek(imageFile,0L,SEEK_SET)!=0 ||
+              std::fread(image.data(),1,image.size(),imageFile)!=image.size()) {
+            nativeSDDWriteError=true;
+            return false;
+          }
+          std::memcpy(record.previous,image.data()+record.offset,256);
+          record.otherSectorsHash=SDDJournal::hashOtherSectors(
+              image.data(),image.size(),record.offset);
+          if (!SDDJournal::stage(imageFileName,record)) {
+            nativeSDDWriteError=true;
+            return false;
+          }
+        }
+        if (std::fseek(imageFile, pos, SEEK_SET) != 0 ||
+            std::fwrite(&(trackBuffer[offs]), 1, bytesPerSector, imageFile)
+                 != bytesPerSector || !syncNativeSDDFile() ||
+            !SDDJournal::clear(imageFileName)) {
+          nativeSDDWriteError = true;
+          return false;             // durable WAL retained if sync fails
+        }
+        flagsBuffer[i] &= uint8_t(0x01);
+      }
+      trackDirtyFlag = false;
+      nativeSDDWriteError = false;
+      return true;
+    }
     if (bufferedTrack >= nTracks || bufferedSide >= nSides ||
         writeProtectFlag || !imageFile) {
       clearDirtyFlag();
@@ -541,11 +779,12 @@ namespace Ep128Emu {
         clearDirtyFlag();
         return (!errorFlag);
       }
-      size_t  offs = size_t(firstSector - 1) * 512;
-      size_t  nBytes = size_t(lastSector + 1 - firstSector) * 512;
+      size_t  offs = size_t(firstSector - 1) * size_t(bytesPerSector);
+      size_t  nBytes = size_t(lastSector + 1 - firstSector) *
+                       size_t(bytesPerSector);
       long    filePos =
           (long(bufferedTrack) * long(nSides) + long(bufferedSide))
-          * (long(nSectorsPerTrack) * 512L)
+          * (long(nSectorsPerTrack) * long(bytesPerSector))
           + long(offs);
       if (std::fseek(imageFile, filePos, SEEK_SET) < 0) {
         errorFlag = true;
@@ -571,7 +810,8 @@ namespace Ep128Emu {
       }
       if (--ledStateCounter == ledStateCount1) {
         ledStateCounter++;
-        (void) flushTrack();            // FIXME: errors are ignored here
+        if (!flushTrack() && requiresDurableWrite())
+          return 0x01;                // pending data remains dirty
         ledStateCounter = 0U;
         return 0x00;
       }
@@ -594,7 +834,12 @@ namespace Ep128Emu {
 
   void FloppyDrive::reset()
   {
-    (void) flushTrack();                // FIXME: errors are ignored here
+    if (nativeSDDWritable && !syncNativeSDD())
+      throw Exception("FDD: writable SDD flush failed during reset");
+    if (writableTRDCopy && !syncWritableTRDCopy())
+      throw Exception("FDD: writable TRD copy flush failed during reset");
+    if (!nativeSDDWritable && !writableTRDCopy)
+      (void) flushTrack();             // preserve legacy behavior
     currentTrack = 0;
     currentSide = 0;
     bufferedTrack = 0xFF;
@@ -631,18 +876,24 @@ namespace std {
     wchar_t *fileName_ = &(tmpBuf[0]);
     Ep128Emu::convertUTF8(fileName_, filename, 512);
     HANDLE  hF = 0;
+    // Physical Windows floppies historically require direct uncached I/O.
+    // Normal disk-image FILES must not use NO_BUFFERING: ReadFile then
+    // rejects 128/256-byte sectors and unaligned track-cache addresses.
+    const bool physicalDevice =
+        (filename[0] == '\\' && filename[1] == '\\' &&
+         filename[2] == '.' && filename[3] == '\\');
+    const DWORD fileFlags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+        (physicalDevice ? FILE_FLAG_NO_BUFFERING : 0);
 
     if (!strcmp(mode, "rb")) {
       hF = CreateFileW(LPCWSTR(fileName_), GENERIC_READ,
                        FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING,
-                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH
-                       | FILE_FLAG_NO_BUFFERING, 0);
+                       fileFlags, 0);
     }
     else if (!strcmp(mode, "r+b")) {
       hF = CreateFileW(LPCWSTR(fileName_), GENERIC_READ | GENERIC_WRITE,
                        FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING,
-                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH
-                       | FILE_FLAG_NO_BUFFERING, 0);
+                       fileFlags, 0);
 
       if (filename[0] == '\\' && filename[1] == '\\' &&
           filename[2] == '.' && filename[3] == '\\') {
@@ -657,7 +908,11 @@ namespace std {
       }
     }
 
-    return (FILE *) hF;
+    // Win32 CreateFileW failure is INVALID_HANDLE_VALUE (-1), not NULL.
+    // A regular read-only image must fall back from r+b to rb so the
+    // virtual FDD can report write protection and preserve original media.
+    // Never expose an invalid Win32 HANDLE as a non-null FILE*.
+    return (hF == INVALID_HANDLE_VALUE || !hF ? (FILE *) 0 : (FILE *) hF);
   }
 
   int ep_fclose(FILE *stream)

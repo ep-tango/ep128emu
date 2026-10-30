@@ -1,0 +1,20 @@
+EP128Emu 2.1 — public build information
+
+Source publication: https://github.com/ep-tango/ep128emu/tree/release/2.1
+Release tag: https://github.com/ep-tango/ep128emu/releases/tag/v2.1
+The publicly distributed source archive excludes internal development and
+QA records. The source corresponds to the shipped application code.
+
+macOS: Apple Silicon ARM64; SCons; FLTK 1.4.5;
+bundled app dependencies and code signing verified.
+Windows x86: MSYS2 mingw32; NSIS installer.
+Windows x64: MSYS2 ucrt64; NSIS installer.
+Codecs: FFmpeg 8.1.2 and corresponding x264 source archive.
+
+Verification: all three native platform builds passed their source-parity
+and packaging checks. Upgrade/uninstall tests on Windows confirmed preservation
+of user-owned files and machine settings. A clean macOS ARM64 source build
+passed with the pinned FLTK toolchain.
+
+This file intentionally contains no personal machine paths, internal Git
+remotes, private repository references or unpublished version history.

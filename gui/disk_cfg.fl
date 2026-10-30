@@ -29,17 +29,17 @@ class Ep128EmuGUI_DiskConfigWindow {open
   updateWindow();
   window->hide();
 }} open
-      xywh {88 224 400 450} type Double color 48 visible
+      xywh {88 224 540 450} type Double color 48 visible
     } {
       Fl_Tabs diskConfigTabs {open
-        xywh {10 10 380 395}
+        xywh {10 10 520 395}
       } {
         Fl_Group {} {
           label Floppy open
-          xywh {10 35 380 370} box THIN_UP_BOX
+          xywh {10 35 520 370} box THIN_UP_BOX
         } {
           Fl_Group {} {open
-            tooltip {Note: you can set any of the disk geometry parameters to -1 to have it calculated from the image file size and the file system header} xywh {20 45 360 80} box THIN_UP_BOX
+            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 45 500 80} box THIN_UP_BOX
           } {
             Fl_Button floppyADeviceButton {
               label {A:}
@@ -67,7 +67,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 55 205 25}
+              tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 55 310 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -80,6 +80,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
                        Fl_Native_File_Chooser::BROWSE_FILE,
                        "Select disk image file")) {
       gui.config["floppy.a.imageFile"] = tmp;
+      gui.rememberDiskImage(tmp);
       floppyAImageFileValuator->value(tmp.c_str());
     }
   }
@@ -87,11 +88,11 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {265 55 25 25} color 50 selection_color 51 labelcolor 3
+              xywh {375 55 25 25} color 50 selection_color 51 labelcolor 3
             }
             Fl_Box {} {
               label {Image file}
-              xywh {300 55 70 25} align 20
+              xywh {410 55 90 25} align 20
             }
             Fl_Value_Input floppyATracksValuator {
               label Tracks
@@ -123,9 +124,21 @@ class Ep128EmuGUI_DiskConfigWindow {open
               xywh {215 92 40 23} align 8 when 4 minimum -1 maximum 240 step 1 value -1
               code0 {o->cursor_color(Fl_Color(3));}
             }
+            Fl_Choice floppyABytesPerSectorValuator {
+              label Bytes
+              callback {{
+  static const int sizes[] = {128, 256, 512, 1024};
+  if (o->value() >= 0 && o->value() <= 3) {
+    gui.config.floppy.a.bytesPerSector = sizes[o->value()];
+    gui.config.floppyAChanged = true;
+  }
+}}
+              tooltip {Sector size in bytes. Standard Enterprise/TVC disks use 512 bytes. Select another size only if required by the disk image.} xywh {390 92 76 23} down_box BORDER_BOX align 8
+              code0 {o->add("128|256|512|1024");}
+            } {}
           }
           Fl_Group {} {open
-            tooltip {Note: you can set any of the disk geometry parameters to -1 to have it calculated from the image file size and the file system header} xywh {20 135 360 80} box THIN_UP_BOX
+            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 135 500 80} box THIN_UP_BOX
           } {
             Fl_Button floppyBDeviceButton {
               label {B:}
@@ -153,7 +166,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 145 205 25}
+              tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 145 310 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -173,11 +186,11 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {265 145 25 25} color 50 selection_color 51 labelcolor 3
+              xywh {375 145 25 25} color 50 selection_color 51 labelcolor 3
             }
             Fl_Box {} {
               label {Image file}
-              xywh {300 145 70 25} align 20
+              xywh {410 145 90 25} align 20
             }
             Fl_Value_Input floppyBTracksValuator {
               label Tracks
@@ -209,9 +222,21 @@ class Ep128EmuGUI_DiskConfigWindow {open
               xywh {215 182 40 23} align 8 when 4 minimum -1 maximum 240 step 1 value -1
               code0 {o->cursor_color(Fl_Color(3));}
             }
+            Fl_Choice floppyBBytesPerSectorValuator {
+              label Bytes
+              callback {{
+  static const int sizes[] = {128, 256, 512, 1024};
+  if (o->value() >= 0 && o->value() <= 3) {
+    gui.config.floppy.b.bytesPerSector = sizes[o->value()];
+    gui.config.floppyBChanged = true;
+  }
+}}
+              tooltip {Sector size in bytes. Standard Enterprise/TVC disks use 512 bytes. Select another size only if required by the disk image.} xywh {390 182 76 23} down_box BORDER_BOX align 8
+              code0 {o->add("128|256|512|1024");}
+            } {}
           }
           Fl_Group {} {open
-            tooltip {Note: you can set any of the disk geometry parameters to -1 to have it calculated from the image file size and the file system header} xywh {20 225 360 80} box THIN_UP_BOX
+            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 225 500 80} box THIN_UP_BOX
           } {
             Fl_Input floppyCImageFileValuator {
               label {C: }
@@ -223,7 +248,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 235 205 25} labelfont 1
+              tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 235 310 25} labelfont 1
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -243,11 +268,11 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {265 235 25 25} color 50 selection_color 51 labelcolor 3
+              xywh {375 235 25 25} color 50 selection_color 51 labelcolor 3
             }
             Fl_Box {} {
               label {Image file}
-              xywh {300 235 70 25} align 20
+              xywh {410 235 90 25} align 20
             }
             Fl_Value_Input floppyCTracksValuator {
               label Tracks
@@ -279,9 +304,21 @@ class Ep128EmuGUI_DiskConfigWindow {open
               xywh {215 272 40 23} align 8 when 4 minimum -1 maximum 240 step 1 value -1
               code0 {o->cursor_color(Fl_Color(3));}
             }
+            Fl_Choice floppyCBytesPerSectorValuator {
+              label Bytes
+              callback {{
+  static const int sizes[] = {128, 256, 512, 1024};
+  if (o->value() >= 0 && o->value() <= 3) {
+    gui.config.floppy.c.bytesPerSector = sizes[o->value()];
+    gui.config.floppyCChanged = true;
+  }
+}}
+              tooltip {Sector size in bytes. Standard Enterprise/TVC disks use 512 bytes. Select another size only if required by the disk image.} xywh {390 272 76 23} down_box BORDER_BOX align 8
+              code0 {o->add("128|256|512|1024");}
+            } {}
           }
           Fl_Group {} {open
-            tooltip {Note: you can set any of the disk geometry parameters to -1 to have it calculated from the image file size and the file system header} xywh {20 315 360 80} box THIN_UP_BOX
+            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 315 500 80} box THIN_UP_BOX
           } {
             Fl_Input floppyDImageFileValuator {
               label {D: }
@@ -293,7 +330,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 325 205 25} labelfont 1
+              tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 325 310 25} labelfont 1
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -313,11 +350,11 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {265 325 25 25} color 50 selection_color 51 labelcolor 3
+              xywh {375 325 25 25} color 50 selection_color 51 labelcolor 3
             }
             Fl_Box {} {
               label {Image file}
-              xywh {300 325 70 25} align 20
+              xywh {410 325 90 25} align 20
             }
             Fl_Value_Input floppyDTracksValuator {
               label Tracks
@@ -349,15 +386,27 @@ class Ep128EmuGUI_DiskConfigWindow {open
               xywh {215 362 40 23} align 8 when 4 minimum -1 maximum 240 step 1 value -1
               code0 {o->cursor_color(Fl_Color(3));}
             }
+            Fl_Choice floppyDBytesPerSectorValuator {
+              label Bytes
+              callback {{
+  static const int sizes[] = {128, 256, 512, 1024};
+  if (o->value() >= 0 && o->value() <= 3) {
+    gui.config.floppy.d.bytesPerSector = sizes[o->value()];
+    gui.config.floppyDChanged = true;
+  }
+}}
+              tooltip {Sector size in bytes. Standard Enterprise/TVC disks use 512 bytes. Select another size only if required by the disk image.} xywh {390 362 76 23} down_box BORDER_BOX align 8
+              code0 {o->add("128|256|512|1024");}
+            } {}
           }
         }
         Fl_Group ideConfigGroup {
           label {IDE/SD} open
-          xywh {10 35 380 370} box THIN_UP_BOX hide
+          xywh {10 35 520 370} box THIN_UP_BOX hide
         } {
           Fl_Group {} {
             label {Primary master} open
-            xywh {20 45 360 61} box THIN_UP_BOX align 21
+            xywh {20 45 500 61} box THIN_UP_BOX align 21
           } {
             Fl_Input ide0ImageFileValuator {
               callback {{
@@ -368,7 +417,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {30 71 310 25}
+              xywh {30 71 410 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -388,12 +437,12 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {345 71 25 25} color 50 selection_color 51
+              xywh {445 71 25 25} color 50 selection_color 51
             }
           }
           Fl_Group {} {
             label {Primary slave} open
-            xywh {20 116 360 61} box THIN_UP_BOX align 21
+            xywh {20 116 500 61} box THIN_UP_BOX align 21
           } {
             Fl_Input ide1ImageFileValuator {
               callback {{
@@ -404,7 +453,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {30 142 310 25}
+              xywh {30 142 410 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -424,12 +473,12 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {345 142 25 25} color 50 selection_color 51
+              xywh {445 142 25 25} color 50 selection_color 51
             }
           }
           Fl_Group {} {
             label {Secondary master} open
-            xywh {20 187 360 61} box THIN_UP_BOX align 21
+            xywh {20 187 500 61} box THIN_UP_BOX align 21
           } {
             Fl_Input ide2ImageFileValuator {
               callback {{
@@ -440,7 +489,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {30 213 310 25}
+              xywh {30 213 410 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -460,12 +509,12 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {345 213 25 25} color 50 selection_color 51
+              xywh {445 213 25 25} color 50 selection_color 51
             }
           }
           Fl_Group {} {
             label {Secondary slave} open
-            xywh {20 258 360 61} box THIN_UP_BOX align 21
+            xywh {20 258 500 61} box THIN_UP_BOX align 21
           } {
             Fl_Input ide3ImageFileValuator {
               callback {{
@@ -476,7 +525,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {30 284 310 25}
+              xywh {30 284 410 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -496,12 +545,12 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {345 284 25 25} color 50 selection_color 51
+              xywh {445 284 25 25} color 50 selection_color 51
             }
           }
           Fl_Group sdCardImageGroup {
             label {SD card} open
-            xywh {20 334 360 61} box ENGRAVED_FRAME align 21
+            xywh {20 334 500 61} box ENGRAVED_FRAME align 21
           } {
             Fl_Input sdExtImageFileValuator {
               callback {{
@@ -515,7 +564,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {30 360 310 25}
+              xywh {30 360 410 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
             Fl_Button {} {
@@ -538,7 +587,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.errorMessage(e.what());
   }
 }}
-              xywh {345 360 25 25} color 50 selection_color 51
+              xywh {445 360 25 25} color 50 selection_color 51
             }
           }
         }
@@ -551,21 +600,25 @@ class Ep128EmuGUI_DiskConfigWindow {open
       gui.config.floppy.a.tracks = -1;
       gui.config.floppy.a.sides = -1;
       gui.config.floppy.a.sectorsPerTrack = -1;
+      gui.config.floppy.a.bytesPerSector = 512;
       gui.config.floppyAChanged = true;
       gui.config.floppy.a.imageFile.clear();
       gui.config.floppy.b.tracks = -1;
       gui.config.floppy.b.sides = -1;
       gui.config.floppy.b.sectorsPerTrack = -1;
+      gui.config.floppy.b.bytesPerSector = 512;
       gui.config.floppyBChanged = true;
       gui.config.floppy.b.imageFile.clear();
       gui.config.floppy.c.tracks = -1;
       gui.config.floppy.c.sides = -1;
       gui.config.floppy.c.sectorsPerTrack = -1;
+      gui.config.floppy.c.bytesPerSector = 512;
       gui.config.floppyCChanged = true;
       gui.config.floppy.c.imageFile.clear();
       gui.config.floppy.d.tracks = -1;
       gui.config.floppy.d.sides = -1;
       gui.config.floppy.d.sectorsPerTrack = -1;
+      gui.config.floppy.d.bytesPerSector = 512;
       gui.config.floppyDChanged = true;
       gui.config.floppy.d.imageFile.clear();
     }
@@ -600,7 +653,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
   }
   updateWindow();
 }}
-        xywh {255 415 60 25} selection_color 50
+        xywh {395 415 60 25} selection_color 50
       }
       Fl_Button {} {
         label OK
@@ -614,7 +667,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
   updateWindow();
   window->hide();
 }}
-        xywh {325 415 60 25} selection_color 50
+        xywh {465 415 60 25} selection_color 50
       }
     }
   }
@@ -628,6 +681,8 @@ class Ep128EmuGUI_DiskConfigWindow {open
   } {
     code {{
   updateWindow();
+  if (!window->shown())
+    gui.positionAuxiliaryWindow(window);
   window->show();
 }} {}
   }
@@ -658,29 +713,49 @@ class Ep128EmuGUI_DiskConfigWindow {open
     floppyATracksValuator->deactivate();
     floppyASidesValuator->deactivate();
     floppyASectorsPerTrackValuator->deactivate();
+    floppyABytesPerSectorValuator->deactivate();
     floppyBTracksValuator->deactivate();
     floppyBSidesValuator->deactivate();
     floppyBSectorsPerTrackValuator->deactivate();
+    floppyBBytesPerSectorValuator->deactivate();
     floppyCTracksValuator->deactivate();
     floppyCSidesValuator->deactivate();
     floppyCSectorsPerTrackValuator->deactivate();
+    floppyCBytesPerSectorValuator->deactivate();
     floppyDTracksValuator->deactivate();
     floppyDSidesValuator->deactivate();
     floppyDSectorsPerTrackValuator->deactivate();
+    floppyDBytesPerSectorValuator->deactivate();
   }
   else {
     floppyATracksValuator->value(double(gui.config.floppy.a.tracks));
     floppyASidesValuator->value(double(gui.config.floppy.a.sides));
     floppyASectorsPerTrackValuator->value(double(gui.config.floppy.a.sectorsPerTrack));
+    const int sectorSizeA = gui.config.floppy.a.bytesPerSector;
+    floppyABytesPerSectorValuator->value(
+        sectorSizeA == 128 ? 0 : sectorSizeA == 256 ? 1 :
+        sectorSizeA == 1024 ? 3 : 2);
     floppyBTracksValuator->value(double(gui.config.floppy.b.tracks));
     floppyBSidesValuator->value(double(gui.config.floppy.b.sides));
     floppyBSectorsPerTrackValuator->value(double(gui.config.floppy.b.sectorsPerTrack));
+    const int sectorSizeB = gui.config.floppy.b.bytesPerSector;
+    floppyBBytesPerSectorValuator->value(
+        sectorSizeB == 128 ? 0 : sectorSizeB == 256 ? 1 :
+        sectorSizeB == 1024 ? 3 : 2);
     floppyCTracksValuator->value(double(gui.config.floppy.c.tracks));
     floppyCSidesValuator->value(double(gui.config.floppy.c.sides));
     floppyCSectorsPerTrackValuator->value(double(gui.config.floppy.c.sectorsPerTrack));
+    const int sectorSizeC = gui.config.floppy.c.bytesPerSector;
+    floppyCBytesPerSectorValuator->value(
+        sectorSizeC == 128 ? 0 : sectorSizeC == 256 ? 1 :
+        sectorSizeC == 1024 ? 3 : 2);
     floppyDTracksValuator->value(double(gui.config.floppy.d.tracks));
     floppyDSidesValuator->value(double(gui.config.floppy.d.sides));
     floppyDSectorsPerTrackValuator->value(double(gui.config.floppy.d.sectorsPerTrack));
+    const int sectorSizeD = gui.config.floppy.d.bytesPerSector;
+    floppyDBytesPerSectorValuator->value(
+        sectorSizeD == 128 ? 0 : sectorSizeD == 256 ? 1 :
+        sectorSizeD == 1024 ? 3 : 2);
     if (typeid(gui.vm) == typeid(TVC64::TVC64VM)) {
       ide0ImageFileValuator->deactivate();
       ide1ImageFileValuator->deactivate();

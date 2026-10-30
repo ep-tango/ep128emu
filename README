@@ -1,5 +1,15 @@
-ep128emu 2.0.11.2
-=================
+EP128Emu 2.1
+============
+
+Download the current macOS ARM64 and Windows x86/x64 releases from:
+https://github.com/ep-tango/ep128emu/releases/tag/v2.1
+
+This repository contains the 2.1 source. On macOS, version 2.1 requires
+FLTK 1.4.5 rather than the historic FLTK versions listed below. The original upstream README is archival context
+and may include platforms and features not in the supplied releases.
+
+Upstream background
+-------------------
 
 ep128emu is an open source, portable emulator of the Enterprise 128,
 ZX Spectrum 48/128, Amstrad CPC 464/664/6128 and Videoton TVC computers,

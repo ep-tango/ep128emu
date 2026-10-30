@@ -112,9 +112,11 @@ namespace Ep128Emu {
                                 vmProcessPriorityChanged,
 #ifdef WIN32
                                 -2.0, 3.0
+#elif defined(__APPLE__)
+                                -2.0, 2.0
 #else
                                 // TODO: implement process priority setting
-                                // on non-Windows platforms
+                                // on other non-Windows platforms
                                 0.0, 0.0
 #endif
                                 );
@@ -208,10 +210,10 @@ namespace Ep128Emu {
                                 displaySettingsChanged, 0.0, 0.95);
     defineConfigurationVariable(*this, "display.width",
                                 display.width, 768,
-                                displaySettingsChanged, 384.0, 1536.0);
+                                displaySettingsChanged, 384.0, 6144.0);
     defineConfigurationVariable(*this, "display.height",
                                 display.height, 576,
-                                displaySettingsChanged, 288.0, 1152.0);
+                                displaySettingsChanged, 288.0, 4608.0);
     defineConfigurationVariable(*this, "display.pixelAspectRatio",
                                 display.pixelAspectRatio, 1.0,
                                 displaySettingsChanged, 0.5, 2.0);
@@ -342,6 +344,11 @@ namespace Ep128Emu {
       defineConfigurationVariable(*this, std::string(s),
                                   floppy_->sectorsPerTrack, int(-1),
                                   *floppyChanged_, -1.0, 240.0);
+      // Missing old configuration keys keep the 512-byte default.
+      std::sprintf(s, "floppy.%c.bytesPerSector", int('a') + i);
+      defineConfigurationVariable(*this, std::string(s),
+                                  floppy_->bytesPerSector, int(512),
+                                  *floppyChanged_, 128.0, 1024.0);
     }
     // ----------------
     defineConfigurationVariable(*this, "ide.imageFile0",
@@ -411,6 +418,9 @@ namespace Ep128Emu {
     defineConfigurationVariable(*this, "videoCapture.yuvFormat",
                                 videoCapture.yuvFormat, false,
                                 videoCaptureSettingsChanged);
+    defineConfigurationVariable(*this, "videoCapture.format",
+                                videoCapture.format, int(0),
+                                videoCaptureSettingsChanged, 0.0, 3.0, 1.0);
     // ----------------
     // videoCaptureSettingsChanged is used only as a dummy variable here
     defineConfigurationVariable(*this, "compressFiles",
@@ -695,12 +705,14 @@ namespace Ep128Emu {
       if (isChanged) {
         try {
           vm_.setDiskImageFile(i, cfg.imageFile,
-                               cfg.tracks, cfg.sides, cfg.sectorsPerTrack);
+                               cfg.tracks, cfg.sides, cfg.sectorsPerTrack,
+                               cfg.bytesPerSector);
         }
         catch (Exception& e) {
           cfg.imageFile.clear();
           vm_.setDiskImageFile(i, cfg.imageFile,
-                               cfg.tracks, cfg.sides, cfg.sectorsPerTrack);
+                               cfg.tracks, cfg.sides, cfg.sectorsPerTrack,
+                               cfg.bytesPerSector);
           errorCallback(errorCallbackUserData, e.what());
         }
         isChanged = false;

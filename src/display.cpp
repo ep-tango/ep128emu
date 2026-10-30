@@ -95,6 +95,7 @@ namespace Ep128Emu {
     pixelAspectRatio = (src.pixelAspectRatio > 0.5f ?
                         (src.pixelAspectRatio < 2.0f ?
                          src.pixelAspectRatio : 2.0f) : 0.5f);
+    pixelPerfect = src.pixelPerfect;
   }
 
   VideoDisplay::DisplayParameters::DisplayParameters()
@@ -109,7 +110,8 @@ namespace Ep128Emu {
       lineShade(0.75f),
       blendScale(1.0f),
       motionBlur(0.25f),
-      pixelAspectRatio(1.0f)
+      pixelAspectRatio(1.0f),
+      pixelPerfect(false)
   {
   }
 
@@ -172,6 +174,20 @@ namespace Ep128Emu {
 
   VideoDisplay::~VideoDisplay()
   {
+  }
+
+  bool VideoDisplay::getRewindState(RewindState& state) const
+  {
+    state = RewindState();
+    return false;
+  }
+
+  bool VideoDisplay::restoreRewindState(const RewindState& state,
+                                        bool resetOutput)
+  {
+    (void) state;
+    (void) resetOutput;
+    return false;
   }
 
   void VideoDisplay::limitFrameRate(bool isEnabled)
