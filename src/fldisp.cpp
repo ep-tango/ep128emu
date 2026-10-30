@@ -255,6 +255,7 @@ namespace Ep128Emu {
       framesPendingFlag(false),
       vsyncState(false),
       oddFrame(false),
+      rewindDiscardUntilFrameBoundary(false),
       videoResampleEnabled(false),
       exitFlag(false),
       limitFrameRateFlag(false),
@@ -327,9 +328,73 @@ namespace Ep128Emu {
     return savedDisplayParameters;
   }
 
+  bool FLTKDisplay_::getRewindState(RewindState& state) const
+  {
+    state.curLine = curLine;
+    state.vsyncCnt = vsyncCnt;
+    state.vsyncState = vsyncState;
+    state.oddFrame = oddFrame;
+    state.valid = true;
+    return true;
+  }
+
+  bool FLTKDisplay_::restoreRewindState(const RewindState& state,
+                                        bool resetOutput)
+  {
+    if (!state.valid)
+      return false;
+
+    curLine = state.curLine;
+    vsyncCnt = state.vsyncCnt;
+    vsyncState = state.vsyncState;
+    oddFrame = state.oddFrame;
+    skippingFrame = false;
+    rewindDiscardUntilFrameBoundary = resetOutput;
+
+    if (!resetOutput)
+      return true;
+
+    // Drop all producer->GUI messages from the future timeline. The GUI may
+    // already be processing one message; the explicit reset marker below is
+    // ordered before all newly generated rewind scanlines and clears any
+    // consumer-side residue left by that race.
+    messageQueueMutex.lock();
+    while (messageQueue) {
+      Message *m = messageQueue;
+      messageQueue = m->nxt;
+      m->nxt = freeMessageStack;
+      freeMessageStack = m;
+    }
+    lastMessage = (Message *) 0;
+    framesPending = 0;
+    framesPendingFlag = false;
+    skippingFrame = false;
+    messageQueueMutex.unlock();
+
+    Message_RewindReset *r = allocateMessage<Message_RewindReset>();
+    queueMessage(r);
+
+    // A pending SetParameters message may have been discarded above. Requeue
+    // the current requested display parameters before any new scanline data.
+    Message_SetParameters *p = allocateMessage<Message_SetParameters>();
+    p->dp = savedDisplayParameters;
+    queueMessage(p);
+    return true;
+  }
+
+  void FLTKDisplay_::resetRewindOutputBuffers()
+  {
+    for (size_t n = 0; n < 578; n++) {
+      if (lineBuffers[n]) {
+        deleteMessage(lineBuffers[n]);
+        lineBuffers[n] = (Message_LineData *) 0;
+      }
+    }
+  }
+
   void FLTKDisplay_::drawLine(const uint8_t *buf, size_t nBytes)
   {
-    if (!skippingFrame) {
+    if (!skippingFrame && !rewindDiscardUntilFrameBoundary) {
       if (curLine >= 0 && curLine < 578) {
         Message_LineData  *m = allocateMessage<Message_LineData>();
         m->lineNum = curLine;
@@ -366,6 +431,15 @@ namespace Ep128Emu {
 
   void FLTKDisplay_::frameDone()
   {
+    notifyFrameDone();
+    if (rewindDiscardUntilFrameBoundary) {
+      // The rewind render anchor may start in the middle of a video frame.
+      // Discard that incomplete tail and begin publishing only from the next
+      // true frame boundary, so the following frame is complete top-to-bottom.
+      rewindDiscardUntilFrameBoundary = false;
+      skippingFrame = false;
+      return;
+    }
     messageQueueMutex.lock();
     bool    skippedFrame = skippingFrame;
     if (!skippedFrame)
@@ -587,18 +661,34 @@ namespace Ep128Emu {
     int     y0 = 0;
     int     x1 = displayWidth_;
     int     y1 = displayHeight_;
-    double  aspectScale_ = (768.0 / 576.0)
-                           / ((double(windowWidth_) / double(windowHeight_))
-                              * double(displayParameters.pixelAspectRatio));
-    if (aspectScale_ > 1.0001) {
-      displayHeight_ = int((double(windowHeight_) / aspectScale_) + 0.5);
+    if (displayParameters.pixelPerfect) {
+      int scale_ = windowWidth_ / 768;
+      int sy_ = windowHeight_ / 576;
+      if (sy_ < scale_)
+        scale_ = sy_;
+      if (scale_ < 1)
+        scale_ = 1;
+      displayWidth_ = 768 * scale_;
+      displayHeight_ = 576 * scale_;
+      x0 = (windowWidth_ - displayWidth_) >> 1;
       y0 = (windowHeight_ - displayHeight_) >> 1;
+      x1 = x0 + displayWidth_;
       y1 = y0 + displayHeight_;
     }
-    else if (aspectScale_ < 0.9999) {
-      displayWidth_ = int((double(windowWidth_) * aspectScale_) + 0.5);
-      x0 = (windowWidth_ - displayWidth_) >> 1;
-      x1 = x0 + displayWidth_;
+    else {
+      double aspectScale_ = (768.0 / 576.0)
+                            / ((double(windowWidth_) / double(windowHeight_))
+                               * double(displayParameters.pixelAspectRatio));
+      if (aspectScale_ > 1.0001) {
+        displayHeight_ = int((double(windowHeight_) / aspectScale_) + 0.5);
+        y0 = (windowHeight_ - displayHeight_) >> 1;
+        y1 = y0 + displayHeight_;
+      }
+      else if (aspectScale_ < 0.9999) {
+        displayWidth_ = int((double(windowWidth_) * aspectScale_) + 0.5);
+        x0 = (windowWidth_ - displayWidth_) >> 1;
+        x1 = x0 + displayWidth_;
+      }
     }
     if (displayWidth_ < 576)
       halfResolutionX_ = true;
@@ -873,6 +963,22 @@ namespace Ep128Emu {
     }
   }
 
+  void FLTKDisplay::resetRewindOutputBuffers()
+  {
+    FLTKDisplay_::resetRewindOutputBuffers();
+    for (size_t n = 0; n < 289; n++)
+      linesChanged[n] = true;
+    forceUpdateLineCnt = 0;
+    forceUpdateLineMask = 0xFF;
+    // Keep the already displayed complete frame visible while rewind
+    // rendering rebuilds lineBuffers. FrameDone will request the redraw only
+    // after the replacement frame is complete.
+    redrawFlag = false;
+    prvFrameWasOdd = false;
+    lastLineNum = -2;
+    noInputTimer.reset();
+  }
+
   bool FLTKDisplay::checkEvents()
   {
     threadLock.notify();
@@ -945,6 +1051,11 @@ namespace Ep128Emu {
         if (screenshotCallbackFlag)
           checkScreenshotCallback();
         break;
+      }
+      else if (m->msgType == Message::MsgType_RewindReset) {
+        deleteMessage(m);
+        resetRewindOutputBuffers();
+        continue;
       }
       else if (m->msgType == Message::MsgType_SetParameters) {
         Message_SetParameters *msg;

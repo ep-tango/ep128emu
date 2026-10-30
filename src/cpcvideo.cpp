@@ -488,6 +488,71 @@ namespace CPC464 {
              size_t(p - reinterpret_cast<uint8_t *>(&(tmpBuf[0]))));
   }
 
+  void CPCVideo::getRewindState(std::vector<unsigned char>& state) const
+  {
+    state.clear();
+    state.reserve(500);
+    state.push_back(1);                 // host-only rewind state version
+    uint32_t hs = uint32_t(int32_t(hSyncCnt));
+    for (int i = 0; i < 4; i++)
+      state.push_back(uint8_t((hs >> (i * 8)) & 0xFFU));
+    state.push_back(crtcHSyncCnt);
+    state.push_back(crtcHSyncState);
+    state.push_back(vSyncCnt);
+    state.push_back(videoModeLatched);
+    const unsigned char *delay =
+        reinterpret_cast<const unsigned char *>(&(videoDelayBuf[0]));
+    state.insert(state.end(), delay, delay + 8);
+    size_t offs = size_t(lineBufPtr - lineBuf);
+    if (offs > 448)
+      offs = 448;
+    state.push_back(uint8_t(offs & 0xFFU));
+    state.push_back(uint8_t((offs >> 8) & 0xFFU));
+    state.insert(state.end(), lineBuf, lineBuf + 448);
+    for (int i = 0; i < 16; i++)
+      state.push_back(palette[i]);
+    state.push_back(borderColor);
+    state.push_back(videoMode);
+    state.push_back(hSyncMax);
+    state.push_back(hSyncLen);
+  }
+
+  bool CPCVideo::restoreRewindState(const std::vector<unsigned char>& state)
+  {
+    // 1 version + 4 hSyncCnt + 4 sync/mode + 8 delay + 2 line offset
+    // + 448 line buffer + 16 palette + 4 mode/sync geometry = 487 bytes.
+    if (state.size() != 487 || state[0] != 1)
+      return false;
+    size_t p = 1;
+    uint32_t hs = uint32_t(state[p]) | (uint32_t(state[p + 1]) << 8)
+                  | (uint32_t(state[p + 2]) << 16)
+                  | (uint32_t(state[p + 3]) << 24);
+    p += 4;
+    hSyncCnt = int(int32_t(hs));
+    crtcHSyncCnt = state[p++];
+    crtcHSyncState = state[p++];
+    vSyncCnt = state[p++];
+    videoModeLatched = state[p++] & 0x03;
+    unsigned char *delay =
+        reinterpret_cast<unsigned char *>(&(videoDelayBuf[0]));
+    for (int i = 0; i < 8; i++)
+      delay[i] = state[p++];
+    size_t offs = size_t(state[p]) | (size_t(state[p + 1]) << 8);
+    p += 2;
+    if (offs > 448)
+      return false;
+    for (size_t i = 0; i < 448; i++)
+      lineBuf[i] = state[p++];
+    lineBufPtr = lineBuf + offs;
+    for (int i = 0; i < 16; i++)
+      palette[i] = state[p++];
+    borderColor = state[p++];
+    videoMode = state[p++] & 0x03;
+    hSyncMax = state[p++];
+    hSyncLen = state[p++];
+    return (p == state.size());
+  }
+
   void CPCVideo::reset()
   {
     videoModeLatched = 0;

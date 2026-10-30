@@ -622,16 +622,24 @@ namespace Ep128 {
 
   void Ep128VM::Dave_::setRemote1State(int state)
   {
+    const bool previousRemoteOn = bool(vm.remoteControlState);
+    const bool previousMotorOn = vm.getIsTapeMotorOn();
     vm.remoteControlState =
         (vm.remoteControlState & 0x02) | uint8_t(bool(state));
     vm.setTapeMotorState(bool(vm.remoteControlState));
+    vm.onTapeRemoteMotorTransition(previousMotorOn);
+    vm.onTapeRemoteCommandChange(previousRemoteOn);
   }
 
   void Ep128VM::Dave_::setRemote2State(int state)
   {
+    const bool previousRemoteOn = bool(vm.remoteControlState);
+    const bool previousMotorOn = vm.getIsTapeMotorOn();
     vm.remoteControlState =
         (vm.remoteControlState & 0x01) | (uint8_t(bool(state)) << 1);
     vm.setTapeMotorState(bool(vm.remoteControlState));
+    vm.onTapeRemoteMotorTransition(previousMotorOn);
+    vm.onTapeRemoteCommandChange(previousRemoteOn);
   }
 
   void Ep128VM::Dave_::interruptRequest()
@@ -813,13 +821,59 @@ namespace Ep128 {
 
   uint8_t Ep128VM::davePortReadCallback(void *userData, uint16_t addr)
   {
-    return (reinterpret_cast<Ep128VM *>(userData)->dave.readPort(addr));
+    Ep128VM& vm = *reinterpret_cast<Ep128VM *>(userData);
+    uint8_t value = vm.dave.readPort(addr);
+    // B6 bit3 is active-low READY. A full queue deasserts READY and
+    // lets EXOS wait while the GUI asks for the host output filename.
+    if ((addr & 0x1FU) == 0x16U && vm.printerDeviceConnected &&
+        (!vm.printerCaptureEnabled ||
+         vm.printerOutputQueue.size() < printerQueueLimit))
+      value &= uint8_t(~0x08U);
+    return value;
+  }
+
+  void Ep128VM::writePrinterStrobe(uint8_t value)
+  {
+    // B5 bit4 drives the inverted /STROBE pin; logical 0->1 means
+    // the printer sees the active-going strobe. Ignore repeated writes.
+    bool active = ((value & 0x10U) != 0U);
+    if (active && !printerStrobeActive && printerCaptureEnabled &&
+        !rewindRestoreMode && !isPlayingDemo) {
+      if (printerOutputQueue.size() < printerQueueLimit)
+        printerOutputQueue.push_back(printerDataLatch);
+      else
+        printerOverflowCount++;
+    }
+    printerStrobeActive = active;
   }
 
   void Ep128VM::davePortWriteCallback(void *userData,
                                       uint16_t addr, uint8_t value)
   {
-    reinterpret_cast<Ep128VM *>(userData)->dave.writePort(addr, value);
+    Ep128VM& vm = *reinterpret_cast<Ep128VM *>(userData);
+    if ((addr & 0x1FU) == 0x16U)
+      vm.printerDataLatch = value; // 8-bit Centronics DATA register
+    else if ((addr & 0x1FU) == 0x15U)
+      vm.writePrinterStrobe(value);
+    vm.dave.writePort(addr, value);
+  }
+
+  void Ep128VM::setPrinterCaptureEnabled(bool enabled)
+  {
+    printerDeviceConnected = true; // GUI opted into virtual printer
+    printerCaptureEnabled = enabled;
+    if (!enabled)
+      printerOutputQueue.clear();
+  }
+
+  void Ep128VM::drainPrinterOutput(std::string& data)
+  {
+    data.clear();
+    data.reserve(printerOutputQueue.size());
+    while (!printerOutputQueue.empty()) {
+      data.push_back(char(printerOutputQueue.front()));
+      printerOutputQueue.pop_front();
+    }
   }
 
   uint8_t Ep128VM::nickPortReadCallback(void *userData, uint16_t addr)
@@ -1235,6 +1289,80 @@ namespace Ep128 {
     vm.dave.clearMouseInput();
   }
 
+  void Ep128VM::cancelPendingTapeRelayRelease()
+  {
+    if (tapeRelayPendingNickCycles != 0U) {
+      tapeRelayPendingNickCycles = 0U;
+      setCallback(&tapeRelayReleaseCallback, this, false);
+    }
+  }
+
+  void Ep128VM::tapeRelayReleaseCallback(void *userData)
+  {
+    Ep128VM& vm = *(reinterpret_cast<Ep128VM *>(userData));
+    if (vm.tapeRelayPendingNickCycles == 0U)
+      return;
+    if (--vm.tapeRelayPendingNickCycles != 0U)
+      return;
+    vm.setCallback(&tapeRelayReleaseCallback, &vm, false);
+    // A long REM OFF qualifies the NEXT audible relay click only.
+    // Crucially this does NOT delay the actual tape motor or spin-up.
+    vm.tapeRelaySoundArmed = (vm.remoteControlState == 0U);
+  }
+
+  void Ep128VM::onTapeRemoteCommandChange(bool previousRemoteOn)
+  {
+    const bool remoteOn = bool(remoteControlState);
+    if (remoteOn == previousRemoteOn)
+      return;  // REM1/REM2 overlap and unchanged combined motor command.
+    if (remoteOn) {
+      const bool audibleEngagement = tapeRelaySoundArmed &&
+          !getIsTapeMotorForcedOn() && !rewindRestoreMode;
+      cancelPendingTapeRelayRelease();
+      tapeRelaySoundArmed = false;
+      if (audibleEngagement)
+        ++tapeRelayEngagementCount;
+    }
+    else {
+      // Raw motor OFF is immediate, exactly as in accepted 0.34.
+      // Debounce applies ONLY to a potential new audible click.
+      cancelPendingTapeRelayRelease();
+      if (tapeRelayReleaseDelayMs == 0U) {
+        tapeRelaySoundArmed = true;
+      }
+      else {
+        tapeRelaySoundArmed = false;
+        tapeRelayPendingNickCycles =
+            uint32_t((uint64_t(nickFrequency) *
+                      uint64_t(tapeRelayReleaseDelayMs) + 999U) / 1000U);
+        if (tapeRelayPendingNickCycles == 0U)
+          tapeRelayPendingNickCycles = 1U;
+        setCallback(&tapeRelayReleaseCallback, this, true);
+      }
+    }
+  }
+
+  void Ep128VM::onTapeRemoteMotorTransition(bool previouslyOn)
+  {
+    const bool motorOn = getIsTapeMotorOn();
+    if (previouslyOn == motorOn || rewindRestoreMode)
+      return; // No actual motor edge (including REM1/REM2 overlap or FORCE).
+
+    if (!motorOn) {
+      tapeSpinUpSamplesRemaining = 0U;
+      tapeSpinUpRemoteArmed = false;
+      dave.setTapeInput(0, 0);
+    }
+    else if (haveTape() && getTapeButtonState() == 1) {
+      // Preserve the accepted 0.34 timing: EVERY real REM motor
+      // restart, including a 2 ms header gap, re-arms tape spin-up.
+      tapeSpinUpSamplesRemaining =
+          uint32_t((uint64_t(getTapeSampleRate()) *
+                    uint64_t(tapeMotorSpinUpDelayMs) + 999U) / 1000U);
+      tapeSpinUpRemoteArmed = true;
+    }
+  }
+
   void Ep128VM::tapeCallback(void *userData)
   {
     Ep128VM&  vm = *(reinterpret_cast<Ep128VM *>(userData));
@@ -1242,8 +1370,17 @@ namespace Ep128 {
     if (vm.tapeSamplesRemaining > 0) {
       // assume tape sample rate < nickFrequency
       vm.tapeSamplesRemaining -= (int64_t(1) << 32);
-      int   daveTapeInput = vm.runTape(int(vm.soundOutputSignal & 0xFFFFU));
-      vm.dave.setTapeInput(daveTapeInput, daveTapeInput);
+      if (vm.tapeSpinUpSamplesRemaining > 0U) {
+        // A motor has started, but the capstan has not reached speed.
+        // Neither consume a tape sample nor expose input to the DAVE.
+        --vm.tapeSpinUpSamplesRemaining;
+        vm.dave.setTapeInput(0, 0);
+      }
+      else {
+        int daveTapeInput =
+            vm.runTape(int(vm.soundOutputSignal & 0xFFFFU));
+        vm.dave.setTapeInput(daveTapeInput, daveTapeInput);
+      }
     }
   }
 
@@ -1560,7 +1697,21 @@ namespace Ep128 {
       singleStepMode(0),
       singleStepModeNextAddr(int32_t(-1)),
       tapeCallbackFlag(false),
+      tapeMotorSpinUpDelayMs(0U),
+      tapeSpinUpSamplesRemaining(0U),
+      tapeSpinUpRewindRestored(false),
+      tapeSpinUpRemoteArmed(false),
+      tapeRelayReleaseDelayMs(0U),
+      tapeRelayPendingNickCycles(0U),
+      tapeRelayEngagementCount(0U),
+      tapeRelaySoundArmed(true),
       remoteControlState(0x00),
+      printerDataLatch(0x00),
+      printerStrobeActive(false),
+      printerCaptureEnabled(false),
+      printerDeviceConnected(false),
+      printerOutputQueue(),
+      printerOverflowCount(0U),
       soundOutputSignal(0U),
       externalDACOutput(0U),
       demoFile((Ep128Emu::File *) 0),
@@ -1568,6 +1719,7 @@ namespace Ep128 {
       isRecordingDemo(false),
       isPlayingDemo(false),
       snapshotLoadFlag(false),
+      rewindRestoreMode(false),
       demoTimeCnt(0U),
       breakPointPriorityThreshold(0),
       cmosMemoryRegisterSelect(0xFF),
@@ -1730,10 +1882,22 @@ namespace Ep128 {
         (haveTape() && getIsTapeMotorOn() && getTapeButtonState() != 0);
     if (newTapeCallbackFlag != tapeCallbackFlag) {
       tapeCallbackFlag = newTapeCallbackFlag;
-      if (!tapeCallbackFlag)
+      if (!tapeCallbackFlag) {
+        tapeSpinUpSamplesRemaining = 0U;
         dave.setTapeInput(0, 0);
+      }
+      else if (!tapeSpinUpRewindRestored && !tapeSpinUpRemoteArmed &&
+               getTapeButtonState() == 1) {
+        // Count emulated source samples, not host real time: the tape stays
+        // at exactly the same position until the motor has spun up.
+        tapeSpinUpSamplesRemaining =
+            uint32_t((uint64_t(getTapeSampleRate()) *
+                      uint64_t(tapeMotorSpinUpDelayMs) + 999U) / 1000U);
+      }
       setCallback(&tapeCallback, this, tapeCallbackFlag);
     }
+    tapeSpinUpRewindRestored = false;
+    tapeSpinUpRemoteArmed = false;
     {
       int64_t tmp =
           int64_t(nickCyclesRemainingL) | (int64_t(nickCyclesRemainingH) << 32);
@@ -1777,7 +1941,17 @@ namespace Ep128 {
     dave.reset(isColdReset);
     setMemoryWaitTiming();
     remoteControlState = 0x00;
+    cancelPendingTapeRelayRelease();
+    tapeRelayEngagementCount = 0U;
+    tapeRelaySoundArmed = true;
+    // Host printer FIFO is an external output stream, not guest RAM.
+    // Preserve undrained output across reset, but reset physical latch pins.
+    printerDataLatch = 0x00;
+    printerStrobeActive = false;
     setTapeMotorState(false);
+    tapeSpinUpSamplesRemaining = 0U;
+    tapeSpinUpRewindRestored = false;
+    tapeSpinUpRemoteArmed = false;
     resetFloppyDrives(isColdReset);
     ideInterface->reset(int(isColdReset) + 1);
     ioPorts.writeDebug(0x44, 0x00);     // disable Spectrum emulator
@@ -1985,6 +2159,8 @@ namespace Ep128 {
     n = n | sdext.getLEDState();
 #endif
     vmStatus_.floppyDriveLEDState = n | ideInterface->getLEDState();
+    vmStatus_.tapeRemoteState = remoteControlState & 0x03U;
+    vmStatus_.tapeMechanicalEngagementCount = tapeRelayEngagementCount;
     vmStatus_.isPlayingDemo = isPlayingDemo;
     if (demoFile != (Ep128Emu::File *) 0 && !isRecordingDemo)
       stopDemoRecording(true);
@@ -1996,7 +2172,8 @@ namespace Ep128 {
       bool yuvFormat_,
       void (*errorCallback_)(void *userData, const char *msg),
       void (*fileNameCallback_)(void *userData, std::string& fileName),
-      void *userData_)
+      void *userData_,
+      bool preserveAllVideoFrames_)
   {
     if (!videoCapture) {
       if (yuvFormat_) {
@@ -2005,7 +2182,7 @@ namespace Ep128 {
       }
       else {
         videoCapture = new Ep128Emu::VideoCapture_RLE8(&Nick::convertPixelToRGB,
-                                                       frameRate_);
+                                                       frameRate_, preserveAllVideoFrames_);
       }
       videoCapture->setClockFrequency(nickFrequency);
       setCallback(&videoCaptureCallback, this, true);
@@ -2136,7 +2313,7 @@ namespace Ep128 {
 
   void Ep128VM::setDiskImageFile(int n, const std::string& fileName_,
                                  int nTracks_, int nSides_,
-                                 int nSectorsPerTrack_)
+                                 int nSectorsPerTrack_, int bytesPerSector_)
   {
 #ifndef ENABLE_SDEXT
     if (n < 0 || n > 7)
@@ -2150,7 +2327,8 @@ namespace Ep128 {
         wd177x.setFloppyDrive(&(floppyDrives[n]));
       }
       floppyDrives[n].setDiskImageFile(fileName_,
-                                       nTracks_, nSides_, nSectorsPerTrack_);
+                                       nTracks_, nSides_, nSectorsPerTrack_,
+                                       bytesPerSector_);
     }
 #ifdef ENABLE_SDEXT
     else if (n >= 8) {
@@ -2180,12 +2358,44 @@ namespace Ep128 {
   void Ep128VM::setTapeFileName(const std::string& fileName)
   {
     Ep128Emu::VirtualMachine::setTapeFileName(fileName);
+    cancelPendingTapeRelayRelease();
     setTapeMotorState(bool(remoteControlState));
+    // The sound engagement counter belongs to the VM session, not to the
+    // inserted tape. Clearing it mid-run makes the GUI read the next motor
+    // event as a new first click; this is especially visible when the tape
+    // is mounted after the guest has already switched REM ON.
+    tapeRelaySoundArmed = (remoteControlState == 0U);
     if (haveTape()) {
       tapeSamplesPerNickCycle =
           (int64_t(getTapeSampleRate()) << 32) / int64_t(nickFrequency);
     }
     tapeSamplesRemaining = 0;
+    tapeSpinUpSamplesRemaining = 0U;
+    tapeSpinUpRewindRestored = false;
+    tapeSpinUpRemoteArmed = false;
+  }
+
+  void Ep128VM::setTapeRelayReleaseDelayMs(uint32_t ms)
+  {
+    if (ms > 200U) ms = 200U;  // bound experimental mechanical delay
+    if (tapeRelayReleaseDelayMs == ms)
+      return;
+    cancelPendingTapeRelayRelease();
+    tapeRelayReleaseDelayMs = ms;
+    // Sound-event filter only: never modify the motor or tape timing.
+    tapeRelaySoundArmed = (remoteControlState == 0U);
+  }
+
+  void Ep128VM::setTapeMotorSpinUpDelayMs(uint32_t ms)
+  {
+    if (ms > 1500U) ms = 1500U;
+    if (tapeMotorSpinUpDelayMs != ms) {
+      tapeMotorSpinUpDelayMs = ms;
+      // Changing the option never restarts an already running tape.
+      tapeSpinUpSamplesRemaining = 0U;
+      tapeSpinUpRewindRestored = false;
+      tapeSpinUpRemoteArmed = false;
+    }
   }
 
   void Ep128VM::tapePlay()
@@ -2198,6 +2408,9 @@ namespace Ep128 {
   void Ep128VM::tapeRecord()
   {
     Ep128Emu::VirtualMachine::tapeRecord();
+    // The trial models the playback lead-in. Do not discard live samples
+    // from tape recording (or a record operation started during spin-up).
+    tapeSpinUpSamplesRemaining = 0U;
     if (haveTape() && getIsTapeMotorOn() && getTapeButtonState() != 0)
       stopDemo();
   }

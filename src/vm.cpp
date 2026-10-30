@@ -379,6 +379,7 @@ namespace Ep128Emu {
     vmStatus_.tapeSampleRate = getTapeSampleRate();
     vmStatus_.tapeSampleSize = getTapeSampleSize();
     vmStatus_.floppyDriveLEDState = getFloppyDriveLEDState();
+    vmStatus_.tapeRemoteState = 0U;
     vmStatus_.isPlayingDemo = getIsPlayingDemo();
     vmStatus_.isRecordingDemo = getIsRecordingDemo();
   }
@@ -388,8 +389,10 @@ namespace Ep128Emu {
       bool yuvFormat_,
       void (*errorCallback_)(void *userData, const char *msg),
       void (*fileNameCallback_)(void *userData, std::string& fileName),
-      void *userData_)
+      void *userData_,
+      bool preserveAllVideoFrames_)
   {
+    (void) preserveAllVideoFrames_;
     (void) frameRate_;
     (void) yuvFormat_;
     (void) errorCallback_;
@@ -425,13 +428,14 @@ namespace Ep128Emu {
 
   void VirtualMachine::setDiskImageFile(int n, const std::string& fileName_,
                                         int nTracks_, int nSides_,
-                                        int nSectorsPerTrack_)
+                                        int nSectorsPerTrack_, int bytesPerSector_)
   {
     (void) n;
     (void) fileName_;
     (void) nTracks_;
     (void) nSides_;
     (void) nSectorsPerTrack_;
+    (void) bytesPerSector_;
   }
 
   uint32_t VirtualMachine::getFloppyDriveLEDState()
@@ -442,6 +446,11 @@ namespace Ep128Emu {
   void VirtualMachine::setEnableFileIO(bool isEnabled)
   {
     fileIOEnabled = isEnabled;
+  }
+
+  void VirtualMachine::setFileIODefaultDevice(bool isFILE)
+  {
+    (void) isFILE;
   }
 
   void VirtualMachine::setWorkingDirectory(const std::string& dirName_)
@@ -802,6 +811,29 @@ namespace Ep128Emu {
   bool VirtualMachine::getIsPlayingDemo() const
   {
     return false;
+  }
+
+  bool VirtualMachine::getIsRewindRestoreSupported() const
+  {
+    return false;
+  }
+
+  bool VirtualMachine::getRewindRuntimeState(RewindRuntimeState& state) const
+  {
+    state = RewindRuntimeState();
+    return false;
+  }
+
+  bool VirtualMachine::restoreRewindRuntimeState(
+      const RewindRuntimeState& state)
+  {
+    (void) state;
+    return false;
+  }
+
+  void VirtualMachine::setRewindRestoreMode(bool enabled)
+  {
+    (void) enabled;
   }
 
   void VirtualMachine::loadState(File::Buffer& buf)

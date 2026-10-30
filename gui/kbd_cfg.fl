@@ -836,7 +836,7 @@ class Ep128EmuGUI_KbdConfigWindow {open
                        "Configuration files\\t*.cfg",
                        Fl_Native_File_Chooser::BROWSE_SAVE_FILE,
                        "Save keyboard configuration as ASCII text file")) {
-      Ep128Emu::addFileNameExtension(tmp, "cfg");
+      Ep128Emu::setFileNameExtension(tmp, "cfg");
       Ep128Emu::ConfigurationDB tmpCfg;
       char    cvName[16];
       for (int i = 0; i < 256; i++) {
@@ -901,8 +901,13 @@ class Ep128EmuGUI_KbdConfigWindow {open
   Function {show()} {open return_type void
   } {
     code {{
-  if (!window->shown())
+  if (!window->shown()) {
+#ifdef __APPLE__
+    gui.joystickInput.refreshDevices();
+#endif
     updateWindow();
+    gui.positionAuxiliaryWindow(window);
+  }
   window->show();
 }} {}
   }

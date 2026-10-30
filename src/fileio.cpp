@@ -212,8 +212,7 @@ namespace Ep128Emu {
       size_t        newSize = ((allocSize + (allocSize >> 3)) | 255) + 1;
       unsigned char *newBuf = new unsigned char[newSize];
       if (buf) {
-        for (size_t i = 0; i < dataSize; i++)
-          newBuf[i] = buf[i];
+        std::memcpy(newBuf, buf, dataSize);
         delete[] buf;
       }
       buf = newBuf;
@@ -354,15 +353,16 @@ namespace Ep128Emu {
       } while (newSize < (curPos + nBytes));
       unsigned char *newBuf = new unsigned char[newSize];
       if (buf) {
-        for (size_t i = 0; i < dataSize; i++)
-          newBuf[i] = buf[i];
+        std::memcpy(newBuf, buf, dataSize);
         delete[] buf;
       }
       buf = newBuf;
       allocSize = newSize;
     }
-    for (size_t i = 0; i < nBytes; i++)
-      buf[curPos++] = buf_[i] & 0xFF;
+    if (nBytes > 0) {
+      std::memcpy(buf + curPos, buf_, nBytes);
+      curPos += nBytes;
+    }
     if (curPos > dataSize)
       dataSize = curPos;
   }
@@ -389,6 +389,28 @@ namespace Ep128Emu {
       dataSize = pos;
     }
     curPos = pos;
+  }
+
+  void File::Buffer::resetForReuse()
+  {
+    // All logical data is invalidated, but the allocation remains available
+    // to avoid reallocating multi-megabyte snapshots every video frame.
+    curPos = 0;
+    dataSize = 0;
+  }
+
+  void File::Buffer::reserve(size_t requiredCapacity)
+  {
+    if (requiredCapacity <= allocSize)
+      return;
+    // A single allocation replaces the old buffer. Preserve existing data,
+    // not unused capacity; no clearing needed for bytes the caller overwrites.
+    unsigned char *newBuf = new unsigned char[requiredCapacity];
+    if (buf && dataSize > 0)
+      std::memcpy(newBuf, buf, dataSize);
+    delete[] buf;
+    buf = newBuf;
+    allocSize = requiredCapacity;
   }
 
   void File::Buffer::clear()
@@ -522,6 +544,11 @@ namespace Ep128Emu {
   {
   }
 
+  File::File(const unsigned char *buf_, size_t nBytes)
+    : buf(buf_, nBytes)
+  {
+  }
+
   File::File(const char *fileName, bool useHomeDirectory)
   {
     bool    err = false;
@@ -587,17 +614,149 @@ namespace Ep128Emu {
     chunkTypeDB.clear();
   }
 
+  void File::resetForReuse()
+  {
+    buf.resetForReuse();
+  }
+
   void File::addChunk(ChunkType type, const Buffer& buf_)
   {
     if (type == EP128EMU_CHUNKTYPE_END_OF_FILE)
       throw Exception("internal error: invalid chunk type");
     size_t  startPos = buf.getPosition();
-    buf.setPosition(startPos + buf_.getDataSize() + 12);
-    buf.setPosition(startPos);
+    // writeUInt32/writeData below fill the whole new chunk. Reserving
+    // capacity directly avoids zeroing the payload and then overwriting it.
+    buf.reserve(startPos + buf_.getDataSize() + 12);
     buf.writeUInt32(uint32_t(type));
     buf.writeUInt32(uint32_t(buf_.getDataSize()));
     buf.writeData(buf_.getData(), buf_.getDataSize());
     buf.writeUInt32(hash_32(buf.getData() + startPos, buf_.getDataSize() + 8));
+  }
+
+  void File::addMachineTypeMetadata(int machineType)
+  {
+    if (machineType < 0 || machineType > 3)
+      throw Exception("invalid machine type metadata");
+    Buffer tmp;
+    tmp.writeUInt32(0x01000000U);
+    tmp.writeByte((unsigned char) machineType);
+    addChunk(EP128EMU_CHUNKTYPE_MACHINE_TYPE, tmp);
+  }
+
+  const char *File::getMachineTypeName(int machineType)
+  {
+    static const char *names[4] = {
+      "Enterprise 128", "ZX Spectrum", "Amstrad CPC", "Videoton TVC"
+    };
+    if (machineType >= 0 && machineType < 4)
+      return names[machineType];
+    if (machineType == 4)
+      return "Commodore Plus/4";
+    return "unknown machine";
+  }
+
+  int File::getMachineType() const
+  {
+    if (buf.getDataSize() < 12)
+      return -1;
+    Buffer in(buf.getData(), buf.getDataSize());
+    in.setPosition(0);
+    int machineType = -1;
+    while (in.getPosition() < (in.getDataSize() - 12)) {
+      size_t startPos = in.getPosition();
+      uint32_t type = in.readUInt32();
+      size_t len = size_t(in.readUInt32());
+      if (len > (in.getDataSize() - (startPos + 12)))
+        throw Exception("unexpected end of file");
+
+      int t = -1;
+      if (type == uint32_t(EP128EMU_CHUNKTYPE_MACHINE_TYPE)) {
+        if (len != 5)
+          throw Exception("invalid machine type metadata");
+        Buffer meta(in.getData() + in.getPosition(), len);
+        meta.setPosition(0);
+        if (meta.readUInt32() != 0x01000000U)
+          throw Exception("unsupported machine type metadata version");
+        t = int(meta.readByte());
+        if (t < 0 || t > 3)
+          throw Exception("invalid machine type metadata");
+      }
+      else {
+        switch (type) {
+        case EP128EMU_CHUNKTYPE_MEMORY_STATE:
+        case EP128EMU_CHUNKTYPE_DAVE_STATE:
+        case EP128EMU_CHUNKTYPE_NICK_STATE:
+        case EP128EMU_CHUNKTYPE_VM_CONFIG:
+        case EP128EMU_CHUNKTYPE_VM_STATE:
+        case EP128EMU_CHUNKTYPE_DEMO_STREAM:
+          t = 0;
+          break;
+        case EP128EMU_CHUNKTYPE_ZXMEM_STATE:
+        case EP128EMU_CHUNKTYPE_ZXIO_STATE:
+        case EP128EMU_CHUNKTYPE_ZXULA_STATE:
+        case EP128EMU_CHUNKTYPE_ZXVM_CONFIG:
+        case EP128EMU_CHUNKTYPE_ZXVM_STATE:
+        case EP128EMU_CHUNKTYPE_ZX_DEMO:
+        case EP128EMU_CHUNKTYPE_ZX_SNA_FILE:
+        case EP128EMU_CHUNKTYPE_ZX_Z80_FILE:
+          t = 1;
+          break;
+        case EP128EMU_CHUNKTYPE_CPCMEM_STATE:
+        case EP128EMU_CHUNKTYPE_CPCIO_STATE:
+        case EP128EMU_CHUNKTYPE_CPCVID_STATE:
+        case EP128EMU_CHUNKTYPE_CPCVM_CONFIG:
+        case EP128EMU_CHUNKTYPE_CPCVM_STATE:
+        case EP128EMU_CHUNKTYPE_CPC_DEMO:
+        case EP128EMU_CHUNKTYPE_CPC_SNA_FILE:
+          t = 2;
+          break;
+        case EP128EMU_CHUNKTYPE_TVCMEM_STATE:
+        case EP128EMU_CHUNKTYPE_TVCVID_STATE:
+        case EP128EMU_CHUNKTYPE_TVCVM_CONFIG:
+        case EP128EMU_CHUNKTYPE_TVCVM_STATE:
+        case EP128EMU_CHUNKTYPE_TVC_DEMO:
+          t = 3;
+          break;
+        case EP128EMU_CHUNKTYPE_M7501_STATE:
+        case EP128EMU_CHUNKTYPE_TED_STATE:
+        case EP128EMU_CHUNKTYPE_P4VM_CONFIG:
+        case EP128EMU_CHUNKTYPE_P4VM_STATE:
+        case EP128EMU_CHUNKTYPE_PLUS4_DEMO:
+        case EP128EMU_CHUNKTYPE_PLUS4_PRG:
+          t = 4;
+          break;
+        default:
+          break;
+        }
+      }
+
+      if (t >= 0) {
+        if (machineType >= 0 && machineType != t)
+          throw Exception("mixed machine types in ep128emu file");
+        machineType = t;
+      }
+      in.setPosition(startPos + len + 12);
+    }
+    return machineType;
+  }
+
+  bool File::hasChunkType(ChunkType chunkType) const
+  {
+    if (buf.getDataSize() < 12)
+      return false;
+    Buffer in(buf.getData(), buf.getDataSize());
+    in.setPosition(0);
+    while (in.getPosition() < (in.getDataSize() - 12)) {
+      size_t startPos = in.getPosition();
+      ChunkType type = ChunkType(in.readUInt32());
+      size_t len = size_t(in.readUInt32());
+      if (len > (in.getDataSize() - (startPos + 12)))
+        throw Exception("unexpected end of file");
+      if (type == chunkType)
+        return true;
+      in.setPosition(startPos + len + 12);
+    }
+    return false;
   }
 
   void File::processAllChunks()

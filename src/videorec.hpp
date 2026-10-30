@@ -161,6 +161,7 @@ namespace Ep128Emu {
     uint32_t    *frameSizes;
     int         cycleCnt;
     bool        prvOddFrame;
+    bool        preserveAllVideoFrames; // H.264 Pixel Graphics diagnostics
     uint8_t     *colormap;
     // ----------------
     void frameDone();
@@ -173,7 +174,8 @@ namespace Ep128Emu {
     VideoCapture_RLE8(void indexToRGBFunc(uint8_t color,
                                           float& r, float& g, float& b) =
                           (void (*)(uint8_t, float&, float&, float&)) 0,
-                      int frameRate_ = 50);
+                      int frameRate_ = 50,
+                      bool preserveAllVideoFrames_ = false);
     virtual ~VideoCapture_RLE8();
     virtual void runOneCycle(uint32_t audioInput);
     virtual void setClockFrequency(size_t freq_);

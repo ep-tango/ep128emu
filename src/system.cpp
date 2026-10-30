@@ -25,6 +25,8 @@
 #  include <direct.h>
 #  include <windows.h>
 #  include <process.h>
+#  include <io.h>
+#  include <fcntl.h>
 #else
 #  include <sys/time.h>
 #  include <unistd.h>
@@ -563,6 +565,28 @@ namespace Ep128Emu {
     fileName += s;
   }
 
+  void setFileNameExtension(std::string& fileName, const char *s)
+  {
+    if (s == (char *) 0 || s[0] == '\0' || fileName.empty())
+      return;
+
+    size_t basePos = fileName.find_last_of(":/\\");
+    basePos = (basePos == std::string::npos ? 0 : basePos + 1);
+    if (basePos >= fileName.length())
+      return;
+
+    size_t dotPos = fileName.find_last_of('.');
+    if (dotPos == std::string::npos || dotPos < basePos || dotPos == basePos) {
+      fileName += '.';
+      fileName += s;
+      return;
+    }
+
+    fileName.erase(dotPos + 1);
+    fileName += s;
+  }
+
+
 #ifdef WIN32
 
   void convertToUTF8(std::string& buf, const wchar_t *s)
@@ -644,6 +668,23 @@ namespace Ep128Emu {
     wchar_t *mode_ = &(tmpBuf2[0]);
     convertUTF8(fileName_, fileName, 480);
     convertUTF8(mode_, mode, 32);
+    // Win7 x86 uses MSVCRT, whose _wfopen does not understand ISO C11
+    // exclusive mode "wbx". The safe auto-screenshot path must create a
+    // new Unicode file atomically without truncating an existing capture.
+    if (std::strcmp(mode, "wbx") == 0) {
+      int fd = _wopen(fileName_, _O_BINARY | _O_WRONLY | _O_CREAT | _O_EXCL,
+                      _S_IREAD | _S_IWRITE);
+      if (fd < 0)
+        return (std::FILE *) 0;  // propagate EEXIST to caller
+      std::FILE *f = _wfdopen(fd, L"wb");
+      if (!f) {
+        const int savedError = errno;
+        _close(fd);
+        _wremove(fileName_);  // only the just-created empty file
+        errno = savedError;
+      }
+      return f;
+    }
     return _wfopen(fileName_, mode_);
   }
 

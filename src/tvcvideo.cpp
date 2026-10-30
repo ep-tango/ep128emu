@@ -303,6 +303,69 @@ namespace TVC64 {
     }
   }
 
+  void TVCVideo::getRewindState(std::vector<unsigned char>& state) const
+  {
+    state.clear();
+    state.reserve(480);
+    state.push_back(1);                 // host-only rewind state version
+    uint32_t hs = uint32_t(int32_t(hSyncCnt));
+    for (int i = 0; i < 4; i++)
+      state.push_back(uint8_t((hs >> (i * 8)) & 0xFFU));
+    state.push_back(crtcHSyncCnt);
+    state.push_back(crtcHSyncState);
+    state.push_back(vSyncCnt);
+    const unsigned char *delay =
+        reinterpret_cast<const unsigned char *>(&(videoDelayBuf[0]));
+    state.insert(state.end(), delay, delay + 8);
+    state.push_back(hSyncLen);
+    state.push_back(hSyncPos);
+    size_t offs = size_t(lineBufPtr - lineBuf);
+    if (offs > 448)
+      offs = 448;
+    state.push_back(uint8_t(offs & 0xFFU));
+    state.push_back(uint8_t((offs >> 8) & 0xFFU));
+    state.insert(state.end(), lineBuf, lineBuf + 448);
+    for (int i = 0; i < 4; i++)
+      state.push_back(palette[i]);
+    state.push_back(borderColor);
+    state.push_back(videoMode);
+  }
+
+  bool TVCVideo::restoreRewindState(const std::vector<unsigned char>& state)
+  {
+    // 1 version + 4 hSyncCnt + 3 sync + 8 delay + 2 hsync geometry
+    // + 2 line offset + 448 line buffer + 6 palette/mode = 474 bytes.
+    if (state.size() != 474 || state[0] != 1)
+      return false;
+    size_t p = 1;
+    uint32_t hs = uint32_t(state[p]) | (uint32_t(state[p + 1]) << 8)
+                  | (uint32_t(state[p + 2]) << 16)
+                  | (uint32_t(state[p + 3]) << 24);
+    p += 4;
+    hSyncCnt = int(int32_t(hs));
+    crtcHSyncCnt = state[p++];
+    crtcHSyncState = state[p++];
+    vSyncCnt = state[p++];
+    unsigned char *delay =
+        reinterpret_cast<unsigned char *>(&(videoDelayBuf[0]));
+    for (int i = 0; i < 8; i++)
+      delay[i] = state[p++];
+    hSyncLen = state[p++];
+    hSyncPos = state[p++];
+    size_t offs = size_t(state[p]) | (size_t(state[p + 1]) << 8);
+    p += 2;
+    if (offs > 448)
+      return false;
+    for (size_t i = 0; i < 448; i++)
+      lineBuf[i] = state[p++];
+    lineBufPtr = lineBuf + offs;
+    for (int i = 0; i < 4; i++)
+      palette[i] = state[p++];
+    borderColor = state[p++];
+    videoMode = state[p++] & 0x03;
+    return (p == state.size());
+  }
+
   void TVCVideo::reset()
   {
     videoDelayBuf[0] = 0U;

@@ -134,7 +134,7 @@ To work around this problem, pm_win\clean_up_vcproj.bat can be used to
 replace absolute paths with relative paths. To use it, you will need to
 install gawk and set your search path to allow you to execute gawk, e.g. 
 my path includes "C:\Program Files\GnuWin32\bin;". You will also need to
-edit pm_win\clean_up_vcproj.awk, replacing C:\Users\rbd\portmidi with
+edit pm_win\clean_up_vcproj.awk, replacing C:\Users\USER\portmidi with
 whatever absolute path cmake uses in your vcproj files.
 
 This is not a general or robust fix, but it seems to work with the 

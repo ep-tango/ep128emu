@@ -48,9 +48,21 @@ namespace Ep128Emu {
     uint8_t     nTracks;
     uint8_t     nSides;
     uint8_t     nSectorsPerTrack;
+    // EF06A: physical bytes per logical sector (128, 256, 512, 1024).
+    // Remains 512 unless a caller explicitly opts in to a different size.
+    uint16_t    bytesPerSector;
     uint8_t     currentTrack;
     uint8_t     currentSide;
     bool        writeProtectFlag;
+    bool        userWriteProtected;
+    // Explicit SpeccyDOS-only raw side-major media; always host read-only.
+    bool        sideMajorSDDReadOnly;
+    bool        nativeSDDWritable;
+    bool        nativeSDDWriteError;
+    // Isolated Beta Disk copy only: never active on original/legacy images.
+    bool        writableTRDCopy;
+    bool        writableTRDWriteError;
+    bool syncNativeSDDFile();
     bool        diskChangeFlag;
     uint8_t     bufferedTrack;          // track stored in buffer, 0xFF: none
     uint8_t     bufferedSide;           // side stored in buffer, 0xFF: none
@@ -74,7 +86,11 @@ namespace Ep128Emu {
     virtual void setDiskImageFile(const std::string& fileName_,
                                   int nTracks_ = -1,
                                   int nSides_ = 2,
-                                  int nSectorsPerTrack_ = 9);
+                                  int nSectorsPerTrack_ = 9,
+                                  int bytesPerSector_ = 512,
+                                  bool sideMajorSDDReadOnly_ = false,
+                                  bool nativeSDDWritable_ = false,
+                                  bool writableTRDCopy_ = false);
     inline void setDiskChangeFlag(bool isChanged)
     {
       diskChangeFlag = isChanged;
@@ -93,8 +109,16 @@ namespace Ep128Emu {
     }
     inline bool getIsWriteProtected() const
     {
-      return writeProtectFlag;
+      return writeProtectFlag || userWriteProtected || nativeSDDWriteError || writableTRDWriteError;
     }
+    inline void setUserWriteProtected(bool v) { userWriteProtected=v; }
+    inline bool getUserWriteProtected() const { return userWriteProtected; }
+    inline bool isNativeSDDWritable() const { return nativeSDDWritable; }
+    inline bool isWritableTRDCopy() const { return writableTRDCopy; }
+    inline bool requiresDurableWrite() const
+    { return nativeSDDWritable || writableTRDCopy; }
+    bool syncWritableTRDCopy();
+    bool syncNativeSDD();
     inline void motorOn()
     {
       motorOnInput = true;
@@ -129,6 +153,17 @@ namespace Ep128Emu {
     {
       return nSectorsPerTrack;
     }
+    inline uint16_t getBytesPerSector() const
+    {
+      return bytesPerSector;
+    }
+    inline uint8_t getSectorLengthCode() const
+    {
+      // WD17xx sector length code: 0=128, 1=256, 2=512, 3=1024.
+      return uint8_t(bytesPerSector == 128 ? 0 :
+                     bytesPerSector == 256 ? 1 :
+                     bytesPerSector == 512 ? 2 : 3);
+    }
     inline uint8_t getCurrentTrack() const
     {
       return currentTrack;
@@ -160,22 +195,22 @@ namespace Ep128Emu {
     }
     inline long getSectorBufferPosition() const
     {
-      return (bufPos >= 0L ? (bufPos & 511L) : bufPos);
+      return (bufPos >= 0L ? (bufPos % long(bytesPerSector)) : bufPos);
     }
     // returns true at end of sector
     inline bool readByte(uint8_t& b)
     {
       b = trackBuffer[bufPos];
       bufPos++;
-      return (!(bufPos & 511L));
+      return ((bufPos % long(bytesPerSector)) == 0L);
     }
     inline bool writeByte(uint8_t b)
     {
       trackDirtyFlag = true;
       trackBuffer[bufPos] = b;
-      flagsBuffer[bufPos >> 9] = 0x81;
+      flagsBuffer[bufPos / long(bytesPerSector)] = 0x81;
       bufPos++;
-      return (!(bufPos & 511L));
+      return ((bufPos % long(bytesPerSector)) == 0L);
     }
     // pad the rest of the current sector with zero bytes
     // called when a write command is aborted
@@ -197,7 +232,7 @@ namespace Ep128Emu {
     }
     inline bool getSectorData()
     {
-      if (!flagsBuffer[bufPos >> 9])
+      if (!flagsBuffer[bufPos / long(bytesPerSector)])
         return readTrack();
       return true;
     }

@@ -210,6 +210,13 @@ namespace Ep128Emu {
    */
   void addFileNameExtension(std::string& fileName, const char *s);
 
+  /*!
+   * Force the final file-name extension to 's'. If the basename already has
+   * an extension, replace it; otherwise append it. Directory components are
+   * never modified.
+   */
+  void setFileNameExtension(std::string& fileName, const char *s);
+
 #ifndef WIN32
   EP128EMU_INLINE std::FILE *fileOpen(const char *fileName, const char *mode)
   {

@@ -739,7 +739,8 @@ namespace Ep128Emu {
 
   void writePNGImage(const char *fileName,
                      const unsigned char *inBuf, int w, int h, int nColors,
-                     bool optimizePalette, size_t blockSize)
+                     bool optimizePalette, size_t blockSize,
+                     bool exclusiveCreate)
   {
     static const char *pngSignature = "\211PNG\r\n\032\n";
 #ifdef PNGWRITE_DEBUG
@@ -826,7 +827,9 @@ namespace Ep128Emu {
         Compressor_ZLib::compressData(outBuf, &(imgDataBuf.front()),
                                       imgDataBuf.size(), blockSize);
       }
-      f = fileOpen(fileName, "wb");
+      // The automatic screenshot route must never truncate an existing file.
+      // ISO C11 exclusive-open mode is supported on macOS and modern CRTs.
+      f = fileOpen(fileName, exclusiveCreate ? "wbx" : "wb");
       if (!f)
         throw Exception("error opening PNG image file");
       if (std::fwrite(pngSignature, sizeof(char), 8, f) != 8)

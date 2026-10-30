@@ -610,10 +610,17 @@ namespace TVC64 {
         if (segment > 0x04)
           throw Ep128Emu::Exception("invalid ROM segment in TVC snapshot");
         allocateSegment(segment, true);
-        for (size_t i = ((segment != 0x02 && segment != 0x04) ? 0 : 8192);
-             i < 16384;
-             i++) {
+        size_t firstByte =
+            ((segment != 0x02 && segment != 0x04) ? 0 : 8192);
+        for (size_t i = firstByte; i < 16384; i++)
           segmentTable[segment][i] = buf.readByte();
+        if (firstByte != 0) {
+          // TVC EXT/FileIO ROM segments are at most 8 KiB. Normal ROM loading
+          // mirrors them into both halves of the internal 16 KiB segment, while
+          // the snapshot format stores only the upper half. Rebuild the lower
+          // mirror after snapshot load as well.
+          std::memcpy(&(segmentTable[segment][0]),
+                      &(segmentTable[segment][8192]), 8192);
         }
       }
       setPaging(currentPaging);

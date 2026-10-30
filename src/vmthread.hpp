@@ -23,6 +23,12 @@
 #include "ep128emu.hpp"
 #include "system.hpp"
 #include "vm.hpp"
+#include "fileio.hpp"
+#include <vector>
+#include <deque>
+#include <atomic>
+#include <string>
+#include <cstdio>
 
 namespace Ep128Emu {
 
@@ -36,6 +42,11 @@ namespace Ep128Emu {
       int       threadStatus;
       float     speedPercentage;
       bool      isPaused;
+      size_t    rewindFramesAvailable;
+      size_t    rewindTimelinePosition;
+      size_t    rewindTimelineLength;
+      size_t    rewindBufferUsageBytes;
+      size_t    rewindBufferLimitBytes;
       // --------
       VMThreadStatus(VMThread& vmThread_);
     };
@@ -45,6 +56,7 @@ namespace Ep128Emu {
     unsigned long   lockCnt;
     ThreadLock      threadLock1;
     ThreadLock      threadLock2;
+    ThreadLock      threadUnlockAck;
     Timer           speedTimer;
     Message         *messageQueue;
     Message         *lastMessage;
@@ -54,8 +66,13 @@ namespace Ep128Emu {
     bool            joinFlag;
     bool            errorFlag;
     bool            pauseFlag;
+#ifdef WIN32
+    bool            audioPauseApplied;
+#endif
+    unsigned int    frameAdvanceRequests;
     float           timesliceLength;
     float           avgTimesliceLength;
+    int             hostThreadPriority;
     double          prvTime;
     double          nxtTime;
     VirtualMachine::VMStatus  vmStatus;
@@ -63,6 +80,52 @@ namespace Ep128Emu {
     void            (*errorCallback)(void *userData_, const char *msg);
     void            (*processCallback)(void *userData_);
     bool            keyboardState[128];
+    std::string     queuedFileIODirectory;
+    bool            queuedFileIOEnabled;
+    bool            queuedFileIODefaultDevice;
+
+    struct RewindDelta {
+      std::vector<unsigned char> data;
+      VideoDisplay::RewindState displayState;
+      VirtualMachine::RewindRuntimeState runtimeState;
+    };
+    std::deque<RewindDelta>      rewindHistory;
+    std::vector<RewindDelta>     rewindForwardHistory;
+    std::vector<unsigned char>   rewindCurrentState;
+    // Scratch storage is VM-thread-owned, never shared with saved history.
+    File                          rewindCaptureFile;
+    VideoDisplay::RewindState    rewindCurrentDisplayState;
+    VirtualMachine::RewindRuntimeState rewindCurrentRuntimeState;
+    size_t                       rewindHistoryBytes;
+    std::atomic<size_t>          rewindHistoryLimitBytes;
+    std::atomic<size_t>          rewindFramesAvailable;
+    std::atomic<uint64_t>        rewindTimelineStatus;
+    std::atomic<size_t>          rewindBufferUsageBytes;
+    uint64_t                     rewindLastFrameSequence;
+    unsigned int                 rewindFrameRequests;
+    int                          rewindJumpRequest;
+    bool                         rewindCaptureEnabled;
+    bool                         rewindCaptureRequested;
+    bool                         rewindCaptureUserEnabled;
+    bool                         rewindCaptureSpeedAllowed;
+    uint8_t                      mouseButtonState;
+    bool                         rewindInputReconcilePending;
+
+    void rewindUpdateTimelineStatus_();
+    void rewindTrimToLimit_();
+    void rewindClearHistory_();
+    void rewindClearForwardHistory_();
+    void rewindCaptureFrame_();
+    bool rewindRestorePreviousFrame_(bool renderFrame = true);
+    bool rewindRestoreNextFrame_(bool renderFrame = true);
+    static void rewindEncodeDelta_(std::vector<unsigned char>& out,
+                                   const std::vector<unsigned char>& oldState,
+                                   const unsigned char *newState,
+                                   size_t newSize);
+    static bool rewindApplyDelta_(std::vector<unsigned char>& state,
+                                  const std::vector<unsigned char>& delta);
+    void rewindLoadState_(const std::vector<unsigned char>& state);
+
    public:
     VMThread(VirtualMachine& vm_, void *userData_ = (void *) 0);
     virtual ~VMThread();
@@ -92,6 +155,36 @@ namespace Ep128Emu {
      */
     void pause(bool n);
     /*!
+     * While paused, run until the next completed video frame and then
+     * remain paused. Returns false if the request is not accepted.
+     */
+    bool advanceFrame();
+    /*!
+     * While paused, restore one previously completed video frame. The
+     * request is accepted only when rewind history is available.
+     */
+    bool rewindFrame();
+    /*!
+     * While paused, move by up to 'n' frames inside already captured rewind
+     * history. Returns the number of frames accepted for the jump. Forward
+     * jumps never simulate new frames beyond the recorded timeline end.
+     */
+    size_t rewindFrames(size_t n);
+    size_t advanceRecordedFrames(size_t n);
+    /*!
+     * Discard all captured rewind history.
+     */
+    void clearRewindHistory();
+    /*!
+     * Set host-RAM budget for rewind history. The update is executed by the
+     * emulation thread; lowering the limit trims only oldest past history and
+     * never destroys recorded-future history in a frozen timeline.
+     */
+    void setRewindHistoryLimit(size_t limitBytes_);
+    // T004 diagnostic/performance control: exact per-frame history capture.
+    // Disabling immediately clears history at the next VM-thread boundary.
+    void setRewindCaptureUserEnabled(bool enabled);
+    /*!
      * Terminate emulation thread. If 'waitFlag_' is true, it will also
      * wait until the thread has actually stopped, and status information
      * is updated.
@@ -111,8 +204,17 @@ namespace Ep128Emu {
      */
     void reset(bool isColdReset_ = false);
     /*!
+     * Queue File I/O state changes for execution by the emulation thread.
+     * This avoids direct GUI-thread access to the virtual machine object.
+     */
+    void setFileIOState(const std::string& directory_, bool enabled_,
+                        bool defaultDeviceIsFILE_);
+    /*!
      * Set amplitude scale for audio output.
      */
+    // Runtime-only audio gate, FIFO-ordered with reset and keyboard events.
+    // Used by Windows archive Full Speed startup to avoid PortAudio pacing.
+    void setAudioOutputEnabled(bool enabled_);
     void setAudioOutputVolume(double ampScale_);
     /*!
      * Set state of key 'keyCode_' (0 to 127).
@@ -141,6 +243,12 @@ namespace Ep128Emu {
      * Set state of all keys and mouse buttons to released.
      */
     void resetKeyboard();
+    /*!
+     * Release all keyboard and mouse buttons immediately while the VM thread
+     * is already locked by the caller. This avoids queueing an asynchronous
+     * keyboard reset immediately before another VM operation.
+     */
+    void resetKeyboardLocked();
     /*!
      * Start tape playback.
      */
@@ -176,11 +284,13 @@ namespace Ep128Emu {
      * Set maximum emulation speed as a percentage (100 = normal speed).
      * A zero or negative value means no limit.
      */
-    void setSpeedPercentage(int speedPercentage_);
+    void setSpeedPercentage(int speedPercentage_, bool audioClockDriven = false);
+    void setHostThreadPriority(int priority_);
   // --------------------------------------------------------------------------
    private:
     virtual void run();
     void cleanup();
+    void resetKeyboard_();
     class Message {
      protected:
       VMThread& vmThread;
@@ -204,6 +314,44 @@ namespace Ep128Emu {
       {
       }
       virtual ~Message_Reset();
+      virtual void process();
+    };
+    class Message_FileIOState : public Message {
+     public:
+      Message_FileIOState(VMThread& vmThread_)
+        : Message(vmThread_)
+      {
+      }
+      virtual ~Message_FileIOState();
+      virtual void process();
+    };
+    class Message_ClearRewind : public Message {
+     public:
+      Message_ClearRewind(VMThread& vmThread_)
+        : Message(vmThread_)
+      {
+      }
+      virtual ~Message_ClearRewind();
+      virtual void process();
+    };
+    class Message_SetRewindLimit : public Message {
+     private:
+      size_t limitBytes;
+     public:
+      Message_SetRewindLimit(VMThread& vmThread_, size_t limitBytes_)
+        : Message(vmThread_), limitBytes(limitBytes_)
+      {
+      }
+      virtual ~Message_SetRewindLimit();
+      virtual void process();
+    };
+    class Message_SetAudioEnabled : public Message {
+     private:
+      bool enabled;
+     public:
+      Message_SetAudioEnabled(VMThread& vmThread_, bool enabled_)
+        : Message(vmThread_), enabled(enabled_) {}
+      virtual ~Message_SetAudioEnabled();
       virtual void process();
     };
     class Message_SetVolume : public Message {
@@ -364,6 +512,14 @@ namespace Ep128Emu {
       Message *m = allocateMessage_();
       if (m)
         return new((void *) m) T(*this, arg1, arg2);
+      return ((T *) 0);
+    }
+    template <typename T, typename T1, typename T2, typename T3>
+    T *allocateMessage(T1 arg1, T2 arg2, T3 arg3)
+    {
+      Message *m = allocateMessage_();
+      if (m)
+        return new((void *) m) T(*this, arg1, arg2, arg3);
       return ((T *) 0);
     }
   };

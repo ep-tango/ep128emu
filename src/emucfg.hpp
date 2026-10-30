@@ -159,11 +159,13 @@ namespace Ep128Emu {
       int         tracks;
       int         sides;
       int         sectorsPerTrack;
+      int         bytesPerSector;
       FloppyDriveSettings()
         : imageFile(""),
           tracks(-1),
           sides(2),
-          sectorsPerTrack(9)
+          sectorsPerTrack(9),
+          bytesPerSector(512)
       {
       }
     };
@@ -227,7 +229,9 @@ namespace Ep128Emu {
     // --------
     struct {
       int         frameRate;
-      bool        yuvFormat;
+      bool        yuvFormat;     // legacy compatibility setting
+      int         format;        // 0=H.264 compatible, 1=H.264 pixel graphics,
+                                 // 2=RLE8 AVI legacy, 3=YV12 AVI legacy
     } videoCapture;
     bool          videoCaptureSettingsChanged;
     // ----------------

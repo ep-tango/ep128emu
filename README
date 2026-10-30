@@ -1,5 +1,15 @@
-ep128emu 2.0.11.2
-=================
+EP128Emu 2.1
+============
+
+Download the current macOS ARM64 and Windows x86/x64 releases from:
+https://github.com/ep-tango/ep128emu/releases/tag/v2.1
+
+This repository contains the current 2.1 source. The original README
+below describes the upstream emulator and may cover historical platforms
+and features not shipped in these 2.1 release assets.
+
+Upstream background
+-------------------
 
 ep128emu is an open source, portable emulator of the Enterprise 128,
 ZX Spectrum 48/128, Amstrad CPC 464/664/6128 and Videoton TVC computers,

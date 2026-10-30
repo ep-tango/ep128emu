@@ -27,6 +27,7 @@
 #include "display.hpp"
 #include "vm.hpp"
 #include "zx128vm.hpp"
+#include "betadisk.hpp"
 #include "debuglib.hpp"
 #include "videorec.hpp"
 
@@ -129,6 +130,10 @@ namespace ZX128 {
 
   EP128EMU_REGPARM1 void ZX128VM::runOneCycle()
   {
+    if (EP128EMU_UNLIKELY(speccyDOS != (SpeccyDOSBus *) 0))
+      speccyDOS->clockULACycle();
+    if (EP128EMU_UNLIKELY(betaDisk != (BetaDiskBus *) 0))
+      betaDisk->clockULACycle();
     ZX128VMCallback *p = firstCallback;
     while (p) {
       ZX128VMCallback *nxt = p->nxt;
@@ -184,11 +189,49 @@ namespace ZX128 {
     }
   }
 
+  EP128EMU_INLINE uint8_t ZX128VM::readMemoryMapped(uint16_t addr,
+                                                    bool opcode)
+  {
+    uint8_t byte = 0xFF;
+    if (EP128EMU_UNLIKELY(betaDisk && betaDisk->isROMSelected() &&
+                         addr < 0x4000U)) {
+      if (opcode) (void) memory.readOpcode(addr);
+      return betaDisk->readROM(addr);
+    }
+    if (EP128EMU_UNLIKELY(speccyDOS &&
+                         speccyDOS->readMemory(addr, byte))) {
+      if (opcode)
+        (void) memory.readOpcode(addr); // keep debugger breakpoint callback
+      return byte;
+    }
+    return (opcode ? memory.readOpcode(addr) : memory.read(addr));
+  }
+
+  EP128EMU_INLINE void ZX128VM::writeMemoryMapped(uint16_t addr,
+                                                  uint8_t byte)
+  {
+    if ((!speccyDOS || !speccyDOS->writeMemory(addr, byte)))
+      memory.write(addr, byte);
+  }
+
+  void ZX128VM::preOpcodeFetchBetaDisk(uint16_t pc)
+  {
+    if (EP128EMU_UNLIKELY(betaDisk != (BetaDiskBus *) 0))
+      betaDisk->preOpcodeFetch(pc, !spectrum128Mode ||
+                                   (spectrum128PageRegister & 0x10U) != 0U);
+  }
+
+  void ZX128VM::preOpcodeFetchSpeccyDOS(uint16_t pc)
+  {
+    if (EP128EMU_UNLIKELY(speccyDOS != (SpeccyDOSBus *) 0))
+      speccyDOS->preOpcodeFetch(pc);
+  }
+
   EP128EMU_REGPARM2 uint8_t ZX128VM::Z80_::readMemory(uint16_t addr)
   {
     addressBusState.W = addr;
     vm.memoryWait(addr);
-    uint8_t   retval = vm.memory.read(addr);
+    uint8_t   retval = vm.readMemoryMapped(addr, false);
     vm.updateCPUHalfCycles(1);
     return retval;
   }
@@ -196,12 +239,12 @@ namespace ZX128 {
   EP128EMU_REGPARM2 uint16_t ZX128VM::Z80_::readMemoryWord(uint16_t addr)
   {
     vm.memoryWait(addr);
-    uint16_t  retval = vm.memory.read(addr);
+    uint16_t  retval = vm.readMemoryMapped(addr, false);
     vm.updateCPUHalfCycles(1);
     addr = (addr + 1) & 0xFFFF;
     addressBusState.W = addr;
     vm.memoryWait(addr);
-    retval |= (uint16_t(vm.memory.read(addr) << 8));
+    retval |= (uint16_t(vm.readMemoryMapped(addr, false) << 8));
     vm.updateCPUHalfCycles(1);
     return retval;
   }
@@ -215,8 +258,10 @@ namespace ZX128 {
       readTapeFile();
       addr = uint16_t(R.PC.W.l);
     }
+    vm.preOpcodeFetchSpeccyDOS(addr);
+    vm.preOpcodeFetchBetaDisk(addr);
     if (!vm.singleStepMode) {
-      uint8_t   retval = vm.memory.readOpcode(addr);
+      uint8_t   retval = vm.readMemoryMapped(addr, true);
       vm.updateCPUHalfCycles(4);
       return retval;
     }
@@ -232,12 +277,21 @@ namespace ZX128 {
     uint16_t  addr = (uint16_t(R.PC.W.l) + uint16_t(1)) & uint16_t(0xFFFF);
     if (invalidOpcodeTable) {
       uint8_t b = vm.memory.readNoDebug(addr);
+      // Prefix validation must use the expansion ROM/SRAM byte if
+      // present: the ordinary Spectrum ROM may differ at this address.
+      // Only ROM/SRAM are safe to peek (FDC data reads have side effects).
+      if (vm.betaDisk && vm.betaDisk->isROMSelected() && addr < 0x4000U)
+        b = vm.betaDisk->readROM(addr);
+      if (vm.speccyDOS && addr < 0x2400U)
+        (void) vm.speccyDOS->readMemory(addr, b);
       if (EP128EMU_UNLIKELY(invalidOpcodeTable[b]))
         return b;
     }
     addressBusState.B.h = R.I;
     vm.memoryWaitM1(addr);
-    uint8_t   retval = vm.memory.readOpcode(addr);
+    vm.preOpcodeFetchSpeccyDOS(addr);
+    vm.preOpcodeFetchBetaDisk(addr);
+    uint8_t   retval = vm.readMemoryMapped(addr, true);
     vm.updateCPUHalfCycles(4);
     return retval;
   }
@@ -247,7 +301,7 @@ namespace ZX128 {
     uint16_t  addr = uint16_t((int(R.PC.W.l) + offset) & 0xFFFF);
     addressBusState.W = addr;
     vm.memoryWait(addr);
-    uint8_t   retval = vm.memory.readOpcode(addr);
+    uint8_t   retval = vm.readMemoryMapped(addr, true);
     vm.updateCPUHalfCycles(1);
     return retval;
   }
@@ -256,12 +310,12 @@ namespace ZX128 {
   {
     uint16_t  addr = uint16_t((int(R.PC.W.l) + offset) & 0xFFFF);
     vm.memoryWait(addr);
-    uint16_t  retval = vm.memory.readOpcode(addr);
+    uint16_t  retval = vm.readMemoryMapped(addr, true);
     vm.updateCPUHalfCycles(1);
     addr = (addr + 1) & 0xFFFF;
     addressBusState.W = addr;
     vm.memoryWait(addr);
-    retval |= (uint16_t(vm.memory.readOpcode(addr) << 8));
+    retval |= (uint16_t(vm.readMemoryMapped(addr, true) << 8));
     vm.updateCPUHalfCycles(1);
     return retval;
   }
@@ -273,7 +327,7 @@ namespace ZX128 {
     vm.memoryWait(addr);
     while (vm.z80OpcodeHalfCycles >= 8)
       vm.runOneCycle();
-    vm.memory.write(addr, value);
+    vm.writeMemoryMapped(addr, value);
     vm.updateCPUHalfCycles(1);
   }
 
@@ -283,14 +337,14 @@ namespace ZX128 {
     vm.memoryWait(addr);
     while (vm.z80OpcodeHalfCycles >= 8)
       vm.runOneCycle();
-    vm.memory.write(addr, uint8_t(value) & 0xFF);
+    vm.writeMemoryMapped(addr, uint8_t(value) & 0xFF);
     vm.updateCPUHalfCycles(1);
     addr = (addr + 1) & 0xFFFF;
     addressBusState.W = addr;
     vm.memoryWait(addr);
     while (vm.z80OpcodeHalfCycles >= 8)
       vm.runOneCycle();
-    vm.memory.write(addr, uint8_t(value >> 8));
+    vm.writeMemoryMapped(addr, uint8_t(value >> 8));
     vm.updateCPUHalfCycles(1);
   }
 
@@ -306,12 +360,12 @@ namespace ZX128 {
     vm.memoryWait((addr + 1) & 0xFFFF);
     while (vm.z80OpcodeHalfCycles >= 8)
       vm.runOneCycle();
-    vm.memory.write((addr + 1) & 0xFFFF, uint8_t(value >> 8));
+    vm.writeMemoryMapped((addr + 1) & 0xFFFF, uint8_t(value >> 8));
     vm.updateCPUHalfCycles(1);
     vm.memoryWait(addr);
     while (vm.z80OpcodeHalfCycles >= 8)
       vm.runOneCycle();
-    vm.memory.write(addr, uint8_t(value) & 0xFF);
+    vm.writeMemoryMapped(addr, uint8_t(value) & 0xFF);
     vm.updateCPUHalfCycles(1);
   }
 
@@ -472,6 +526,11 @@ namespace ZX128 {
       int     bpType = int(isWrite) + 1;
       if (!isWrite && uint16_t(vm.z80.getReg().PC.W.l) == addr)
         bpType = 0;
+      // Return the actual bus byte, not the original Spectrum ROM byte,
+      // when the optional TR-DOS shadow ROM owns CPU page zero.
+      if (!isWrite && addr < 0x4000U && vm.betaDisk &&
+          vm.betaDisk->isROMSelected())
+        value = vm.betaDisk->readROM(addr);
       vm.breakPointCallback(vm.breakPointCallbackUserData, bpType, addr, value);
     }
   }
@@ -577,6 +636,8 @@ namespace ZX128 {
   {
     ZX128VM&  vm = *(reinterpret_cast<ZX128VM *>(userData));
     uint8_t   retval = 0xFF;
+    if (vm.betaDisk && vm.betaDisk->handlesPort(addr))
+      return vm.betaDisk->readPort(addr);
     if ((addr & 0xE0) == 0)
       retval = vm.joystickState;
     else if ((addr & 0x01) == 0)
@@ -601,6 +662,10 @@ namespace ZX128 {
                                     uint16_t addr, uint8_t value)
   {
     ZX128VM&  vm = *(reinterpret_cast<ZX128VM *>(userData));
+    if (vm.betaDisk && vm.betaDisk->handlesPort(addr)) {
+      vm.betaDisk->writePort(addr, value);
+      return;
+    }
     if ((addr & 0x01) == 0)
       vm.ula.writePort(value);
     if ((addr & 0x02) == 0 && vm.spectrum128Mode) {
@@ -626,6 +691,8 @@ namespace ZX128 {
   {
     ZX128VM&  vm = *(reinterpret_cast<ZX128VM *>(userData));
     uint8_t   retval = 0xFF;
+    if (vm.betaDisk && vm.betaDisk->handlesPort(addr))
+      return vm.betaDisk->readPort(addr, true);
     if (addr < 0x0100) {
       if ((addr & 0xE0) == 0)
         retval = vm.joystickState;
@@ -709,17 +776,26 @@ namespace ZX128 {
     vm.videoCapture->runOneCycle(vm.soundOutputSignal);
   }
 
+  uint8_t ZX128VM::peekBetaShadowByte(uint16_t addr)
+  {
+    if (betaDisk && betaDisk->isROMSelected() && addr < 0x4000U)
+      return betaDisk->readROM(addr);
+    return memory.readNoDebug(addr);
+  }
+
   uint8_t ZX128VM::checkSingleStepModeBreak()
   {
     uint16_t  addr = z80.getReg().PC.W.l;
     uint8_t   b0 = 0x00;
     if (singleStepMode == 3) {
       b0 = memory.readOpcode(addr);
+      if (betaDisk && betaDisk->isROMSelected() && addr < 0x4000U)
+        b0 = betaDisk->readROM(addr);
       if (!singleStepMode)
         return b0;
     }
     else
-      b0 = memory.readNoDebug(addr);
+      b0 = peekBetaShadowByte(addr);
     int32_t   nxtAddr = int32_t(-1);
     if (singleStepMode == 2 || singleStepMode == 4) {
       // 'step over' or 'step into' mode
@@ -745,7 +821,7 @@ namespace ZX128 {
           opType = (b0 == 0xF7 ? 0x52 : 0x61);  // EXOS, RST
       }
       else {
-        uint8_t b1 = memory.readNoDebug((addr + 1) & 0xFFFF);
+        uint8_t b1 = peekBetaShadowByte((addr + 1) & 0xFFFF);
         if ((b1 & 0xF4) == 0xB0)
           opType = 0x82;                // LDIR etc.
       }
@@ -756,14 +832,14 @@ namespace ZX128 {
       }
       else if (opType == 0x22 || opType == 0x33) {
         // step into
-        uint16_t  tmp = memory.readNoDebug((addr + 1) & 0xFFFF);
+        uint16_t  tmp = peekBetaShadowByte((addr + 1) & 0xFFFF);
         if (opType == 0x22) {           // conditional JR
           if (tmp & 0x80)
             tmp = tmp | 0xFF00;
           nxtAddr = int32_t((addr + 2 + tmp) & 0xFFFF);
         }
         else {                          // conditional JP or CALL
-          tmp = tmp | (uint16_t(memory.readNoDebug((addr + 2) & 0xFFFF)) << 8);
+          tmp = tmp | (uint16_t(peekBetaShadowByte((addr + 2) & 0xFFFF)) << 8);
           nxtAddr = int32_t(tmp);
         }
       }
@@ -897,6 +973,8 @@ namespace ZX128 {
       ioPorts(*this),
       ay3(),
       ula(*this),
+      speccyDOS((SpeccyDOSBus *) 0),
+      betaDisk((BetaDiskBus *) 0),
       ulaCyclesRemainingL(0U),
       ulaCyclesRemainingH(0),
       spectrum128Mode(true),
@@ -915,6 +993,7 @@ namespace ZX128 {
       isRecordingDemo(false),
       isPlayingDemo(false),
       snapshotLoadFlag(false),
+      rewindRestoreMode(false),
       demoTimeCnt(0UL),
       breakPointPriorityThreshold(0),
       firstCallback((ZX128VMCallback *) 0),
@@ -946,8 +1025,59 @@ namespace ZX128 {
     resetMemoryConfiguration(128);
   }
 
+  bool ZX128VM::installSpeccyDOSFirmware(
+      const std::vector<uint8_t>& image, bool alreadyDecoded)
+  {
+    // Explicit test-only opt-in: normal Spectrum behavior is unchanged.
+    if (betaDisk || image.size() != 8192U)
+      return false;
+    SpeccyDOSBus *next = new SpeccyDOSBus();
+    if (!next->loadFirmware(image, alreadyDecoded)) {
+      delete next;
+      return false;
+    }
+    stopDemo();
+    delete speccyDOS;
+    speccyDOS = next;
+    speccyDOS->setULACycleFrequency(uint32_t(ulaFrequency));
+    reset(true);
+    return true;
+  }
+
+  bool ZX128VM::installBetaDiskFirmware(const std::vector<uint8_t>& image)
+  {
+    if (speccyDOS || betaDisk || image.size() != 16384U) return false;
+    BetaDiskBus *next = new BetaDiskBus(image);
+    next->setULACycleFrequency(uint32_t(ulaFrequency));
+    stopDemo();
+    betaDisk = next;
+    reset(true);
+    return true;
+  }
+
+  void ZX128VM::removeBetaDisk()
+  {
+    if (!betaDisk) return;
+    delete betaDisk;
+    betaDisk = (BetaDiskBus *) 0;
+    reset(true);
+  }
+
+  void ZX128VM::removeSpeccyDOS()
+  {
+    if (!speccyDOS)
+      return;
+    delete speccyDOS;
+    speccyDOS = (SpeccyDOSBus *) 0;
+    reset(true);
+  }
+
   ZX128VM::~ZX128VM()
   {
+    delete speccyDOS;
+    speccyDOS = (SpeccyDOSBus *) 0;
+    delete betaDisk;
+    betaDisk = (BetaDiskBus *) 0;
     if (videoCapture) {
       delete videoCapture;
       videoCapture = (Ep128Emu::VideoCapture *) 0;
@@ -999,6 +1129,9 @@ namespace ZX128 {
     stopDemoPlayback();         // TODO: should be recorded as an event ?
     stopDemoRecording(false);
     z80.reset();
+    if (speccyDOS)
+      speccyDOS->reset(isColdReset);
+    if (betaDisk) betaDisk->reset(isColdReset);
     spectrum128PageRegister = 0x00;
     ayRegisterSelected = 0x00;
     initializeMemoryPaging();
@@ -1077,6 +1210,7 @@ namespace ZX128 {
     if (freq == ulaFrequency)
       return;
     ulaFrequency = freq;
+    if (betaDisk) betaDisk->setULACycleFrequency(uint32_t(ulaFrequency));
     stopDemoPlayback();         // changing configuration implies stopping
     stopDemoRecording(false);   // any demo playback or recording
     setAudioConverterSampleRate(float(long(ulaFrequency >> 2)));
@@ -1131,7 +1265,8 @@ namespace ZX128 {
       bool yuvFormat_,
       void (*errorCallback_)(void *userData, const char *msg),
       void (*fileNameCallback_)(void *userData, std::string& fileName),
-      void *userData_)
+      void *userData_,
+      bool preserveAllVideoFrames_)
   {
     if (!videoCapture) {
       if (yuvFormat_) {
@@ -1140,7 +1275,7 @@ namespace ZX128 {
       }
       else {
         videoCapture = new Ep128Emu::VideoCapture_RLE8(&ULA::convertPixelToRGB,
-                                                       frameRate_);
+                                                       frameRate_, preserveAllVideoFrames_);
       }
       videoCapture->setClockFrequency(ulaFrequency);
       setCallback(&videoCaptureCallback, this, true);
@@ -1337,6 +1472,11 @@ namespace ZX128 {
 
   uint8_t ZX128VM::readMemory(uint32_t addr, bool isCPUAddress) const
   {
+    // The CPU-address debugger view is the live bus. Segment addressing
+    // remains raw/physical so the Spectrum original ROM can be inspected.
+    if (isCPUAddress && (addr & 0xFFFFU) < 0x4000U && betaDisk &&
+        betaDisk->isROMSelected())
+      return betaDisk->readROM(uint16_t(addr));
     if (isCPUAddress)
       addr = ((uint32_t(memory.getPage(uint8_t(addr >> 14) & uint8_t(3))) << 14)
               | (addr & uint32_t(0x3FFF)));

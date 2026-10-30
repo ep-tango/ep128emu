@@ -24,6 +24,9 @@
 
 #include <sndfile.h>
 #include <portaudio.h>
+#ifdef __APPLE__
+#  include <lame/lame.h>
+#endif
 #ifdef ENABLE_MIDI_PORT
 #  include <portmidi.h>
 #  include <porttime.h>
@@ -62,9 +65,279 @@ static inline bool isPortAudioError(const char *msg, PaError paError)
 
 namespace Ep128Emu {
 
+  static bool soundFileNameHasExtension(const std::string& fileName,
+                                        const char *ext)
+  {
+    if (!ext)
+      return false;
+    size_t n = std::strlen(ext);
+    if (fileName.length() < n)
+      return false;
+    size_t p = fileName.length() - n;
+    for (size_t i = 0; i < n; i++) {
+      char a = fileName[p + i];
+      char b = ext[i];
+      if (a >= 'A' && a <= 'Z')
+        a = char(a + ('a' - 'A'));
+      if (b >= 'A' && b <= 'Z')
+        b = char(b + ('a' - 'A'));
+      if (a != b)
+        return false;
+    }
+    return true;
+  }
+
+  static SNDFILE *openSoundOutputFile(const std::string& fileName,
+                                      float sampleRate)
+  {
+    SF_INFO sfinfo;
+    std::memset(&sfinfo, 0, sizeof(SF_INFO));
+    // For write mode the final frame count is not known yet. libsndfile
+    // accepts 0 for this; -1 happened to work for WAV but is rejected by
+    // FLAC and MPEG writers as an incomplete SF_INFO structure.
+    sfinfo.frames = 0;
+    sfinfo.samplerate = int(sampleRate + 0.5);
+    sfinfo.channels = 2;
+
+    bool mp3Format = soundFileNameHasExtension(fileName, ".mp3");
+    bool flacFormat = soundFileNameHasExtension(fileName, ".flac");
+    if (mp3Format)
+      sfinfo.format = SF_FORMAT_MPEG | SF_FORMAT_MPEG_LAYER_III;
+    else if (flacFormat)
+      sfinfo.format = SF_FORMAT_FLAC | SF_FORMAT_PCM_16;
+    else
+      sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+
+    if (!sf_format_check(&sfinfo))
+      throw Exception("unsupported sound output format");
+
+    SNDFILE *f = sf_open(fileName.c_str(), SFM_WRITE, &sfinfo);
+    if (!f)
+      throw Exception("error opening output sound file");
+
+    if (mp3Format) {
+      // Native libsndfile/LAME VBR. Quality 0.25 is intentionally on the
+      // high side for clean emulator audio while remaining much smaller than PCM.
+      int mode = SF_BITRATE_MODE_VARIABLE;
+      (void) sf_command(f, SFC_SET_BITRATE_MODE, &mode, sizeof(mode));
+      double quality = 0.25;
+      (void) sf_command(f, SFC_SET_VBR_ENCODING_QUALITY,
+                        &quality, sizeof(quality));
+      int actualMode = sf_command(f, SFC_GET_BITRATE_MODE, (void *) 0, 0);
+      if (actualMode != SF_BITRATE_MODE_VARIABLE) {
+        sf_close(f);
+        throw Exception("MP3 VBR mode is not supported by this sound library");
+      }
+    }
+    else if (flacFormat) {
+      // Lossless: compression affects CPU/file size only, never audio quality.
+      double compressionLevel = 0.5;
+      (void) sf_command(f, SFC_SET_COMPRESSION_LEVEL,
+                        &compressionLevel, sizeof(compressionLevel));
+    }
+    return f;
+  }
+
+  class AudioOutput::MP3WriterThread : private Thread
+  {
+   private:
+#ifdef __APPLE__
+    std::FILE *file_;
+    lame_t lame_;
+    std::vector<unsigned char> mp3Buf_;
+#else
+    SNDFILE *file_;
+#endif
+    std::vector<int16_t> ring_;
+    size_t capacityFrames_;
+    std::atomic<uint64_t> writeFrame_;
+    std::atomic<uint64_t> readFrame_;
+    std::atomic<bool> stopping_;
+    std::atomic<bool> failed_;
+    std::string errorText_;
+
+    void setFailure_(const char *msg)
+    {
+      errorText_ = (msg ? msg : "MP3 encoder error");
+      failed_.store(true, std::memory_order_release);
+    }
+
+   protected:
+    virtual void run()
+    {
+      std::vector<int16_t> tmp(8192U * 2U);
+      for (;;) {
+        uint64_t r = readFrame_.load(std::memory_order_relaxed);
+        uint64_t w = writeFrame_.load(std::memory_order_acquire);
+        size_t nFrames = size_t(w - r);
+        if (nFrames > 8192U)
+          nFrames = 8192U;
+
+        if (nFrames > 0U) {
+          size_t pos = size_t(r % uint64_t(capacityFrames_));
+          size_t n1 = nFrames;
+          if (n1 > (capacityFrames_ - pos))
+            n1 = capacityFrames_ - pos;
+          std::memcpy(&(tmp[0]), &(ring_[pos * 2U]),
+                      n1 * 2U * sizeof(int16_t));
+          if (n1 < nFrames) {
+            std::memcpy(&(tmp[n1 * 2U]), &(ring_[0]),
+                        (nFrames - n1) * 2U * sizeof(int16_t));
+          }
+
+          if (!failed_.load(std::memory_order_relaxed)) {
+#ifdef __APPLE__
+            int n = lame_encode_buffer_interleaved(
+                        lame_, reinterpret_cast<short *>(&(tmp[0])),
+                        int(nFrames), &(mp3Buf_[0]), int(mp3Buf_.size()));
+            if (n < 0 || (n > 0 && std::fwrite(&(mp3Buf_[0]), 1, size_t(n), file_)
+                                      != size_t(n))) {
+              setFailure_("error writing MP3 sound file -- is the disk full ?");
+            }
+#else
+            if (sf_writef_short(file_,
+                                reinterpret_cast<short *>(&(tmp[0])),
+                                sf_count_t(nFrames)) != sf_count_t(nFrames)) {
+              setFailure_("error writing MP3 sound file -- is the disk full ?");
+            }
+#endif
+          }
+          readFrame_.store(r + uint64_t(nFrames), std::memory_order_release);
+          continue;
+        }
+
+        if (stopping_.load(std::memory_order_acquire))
+          break;
+        (void) wait(2);
+      }
+
+      if (file_) {
+#ifdef __APPLE__
+        if (!failed_.load(std::memory_order_relaxed)) {
+          int n = lame_encode_flush(lame_, &(mp3Buf_[0]), int(mp3Buf_.size()));
+          if (n < 0 || (n > 0 && std::fwrite(&(mp3Buf_[0]), 1, size_t(n), file_)
+                                    != size_t(n)))
+            setFailure_("error flushing MP3 sound file");
+        }
+        if (std::fflush(file_) != 0 && !failed_.load(std::memory_order_relaxed))
+          setFailure_("error flushing MP3 sound file");
+        if (!failed_.load(std::memory_order_relaxed))
+          lame_mp3_tags_fid(lame_, file_);
+        if (std::fclose(file_) != 0 && !failed_.load(std::memory_order_relaxed))
+          setFailure_("error closing MP3 sound file");
+        file_ = (std::FILE *) 0;
+        if (lame_) {
+          lame_close(lame_);
+          lame_ = (lame_t) 0;
+        }
+#else
+        sf_write_sync(file_);
+        if (sf_close(file_) != 0 &&
+            !failed_.load(std::memory_order_relaxed))
+          setFailure_("error closing MP3 sound file");
+        file_ = (SNDFILE *) 0;
+#endif
+      }
+    }
+
+   public:
+    MP3WriterThread(const std::string& fileName, float sampleRate)
+#ifdef __APPLE__
+      : file_((std::FILE *) 0), lame_((lame_t) 0),
+#else
+      : file_((SNDFILE *) 0),
+#endif
+        capacityFrames_(size_t(sampleRate * 8.0f + 0.5f)),
+        writeFrame_(0ULL), readFrame_(0ULL),
+        stopping_(false), failed_(false), errorText_("")
+    {
+      if (capacityFrames_ < 65536U)
+        capacityFrames_ = 65536U;
+      ring_.resize(capacityFrames_ * 2U);
+#ifdef __APPLE__
+      file_ = fileOpen(fileName.c_str(), "w+b");
+      if (!file_)
+        throw Exception("error opening output sound file");
+      lame_ = lame_init();
+      if (!lame_) {
+        std::fclose(file_);
+        file_ = (std::FILE *) 0;
+        throw Exception("error initializing LAME MP3 encoder");
+      }
+      if (lame_set_in_samplerate(lame_, int(sampleRate + 0.5f)) < 0 ||
+          lame_set_out_samplerate(lame_, int(sampleRate + 0.5f)) < 0 ||
+          lame_set_num_channels(lame_, 2) < 0 ||
+          lame_set_mode(lame_, JOINT_STEREO) < 0 ||
+          lame_set_VBR(lame_, vbr_default) < 0 ||
+          lame_set_VBR_q(lame_, 2) < 0 ||
+          lame_set_quality(lame_, 2) < 0 ||
+          lame_init_params(lame_) < 0) {
+        lame_close(lame_);
+        lame_ = (lame_t) 0;
+        std::fclose(file_);
+        file_ = (std::FILE *) 0;
+        throw Exception("error configuring LAME MP3 encoder");
+      }
+      mp3Buf_.resize(65536U);
+#else
+      file_ = openSoundOutputFile(fileName, sampleRate);
+#endif
+      start();
+    }
+
+    virtual ~MP3WriterThread()
+    {
+      stop();
+    }
+
+    bool push(const int16_t *buf, size_t nFrames, std::string& errorText)
+    {
+      if (failed_.load(std::memory_order_acquire)) {
+        errorText = errorText_;
+        return false;
+      }
+      uint64_t w = writeFrame_.load(std::memory_order_relaxed);
+      uint64_t r = readFrame_.load(std::memory_order_acquire);
+      uint64_t used = w - r;
+      if (uint64_t(nFrames) > uint64_t(capacityFrames_) - used) {
+        errorText = "MP3 encoder buffer overflow";
+        return false;
+      }
+
+      size_t pos = size_t(w % uint64_t(capacityFrames_));
+      size_t n1 = nFrames;
+      if (n1 > (capacityFrames_ - pos))
+        n1 = capacityFrames_ - pos;
+      std::memcpy(&(ring_[pos * 2U]), buf,
+                  n1 * 2U * sizeof(int16_t));
+      if (n1 < nFrames) {
+        std::memcpy(&(ring_[0]), &(buf[n1 * 2U]),
+                    (nFrames - n1) * 2U * sizeof(int16_t));
+      }
+      writeFrame_.store(w + uint64_t(nFrames), std::memory_order_release);
+      return true;
+    }
+
+    void stop()
+    {
+      if (!stopping_.exchange(true, std::memory_order_acq_rel))
+        start();
+      join();
+    }
+
+    bool failed(std::string& errorText) const
+    {
+      if (!failed_.load(std::memory_order_acquire))
+        return false;
+      errorText = errorText_;
+      return true;
+    }
+  };
+
   AudioOutput::AudioOutput()
     : outputFileName(""),
       soundFile((SNDFILE *) 0),
+      mp3Writer((MP3WriterThread *) 0),
       deviceNumber(-1),
       sampleRate(0.0f),
       totalLatency(0.0f),
@@ -77,10 +350,30 @@ namespace Ep128Emu {
   {
     // NOTE: the destructor of a derived class is responsible for closing
     // the audio device if it is open
+    closeOutputFile_();
+  }
+
+  void AudioOutput::closeOutputFile_()
+  {
+    if (mp3Writer) {
+      mp3Writer->stop();
+      delete mp3Writer;
+      mp3Writer = (MP3WriterThread *) 0;
+    }
     if (soundFile) {
       sf_close(soundFile);
       soundFile = (SNDFILE *) 0;
     }
+  }
+
+  void AudioOutput::openOutputFile_()
+  {
+    if (outputFileName.empty() || sampleRate <= 0.0f)
+      return;
+    if (soundFileNameHasExtension(outputFileName, ".mp3"))
+      mp3Writer = new MP3WriterThread(outputFileName, sampleRate);
+    else
+      soundFile = openSoundOutputFile(outputFileName, sampleRate);
   }
 
   void AudioOutput::setParameters(int deviceNumber_, float sampleRate_,
@@ -116,21 +409,14 @@ namespace Ep128Emu {
     nPeriodsSW = nPeriodsSW_;
     if (sampleRate_ != sampleRate) {
       sampleRate = sampleRate_;
-      if (soundFile != (SNDFILE *) 0) {
-        sf_close(soundFile);
-        soundFile = (SNDFILE *) 0;
-      }
+      closeOutputFile_();
       if (outputFileName.length() != 0) {
-        SF_INFO sfinfo;
-        std::memset(&sfinfo, 0, sizeof(SF_INFO));
-        sfinfo.frames = -1;
-        sfinfo.samplerate = int(sampleRate + 0.5);
-        sfinfo.channels = 2;
-        sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-        soundFile = sf_open(outputFileName.c_str(), SFM_WRITE, &sfinfo);
-        if (!soundFile) {
+        try {
+          openOutputFile_();
+        }
+        catch (...) {
           outputFileName = "";
-          throw Exception("error opening output sound file");
+          throw;
         }
       }
     }
@@ -151,32 +437,38 @@ namespace Ep128Emu {
   {
     if (fileName == outputFileName)
       return;
+    closeOutputFile_();
     outputFileName = "";
-    if (soundFile != (SNDFILE *) 0) {
-      sf_close(soundFile);
-      soundFile = (SNDFILE *) 0;
-    }
     if (fileName.length() != 0) {
-      SF_INFO sfinfo;
-      std::memset(&sfinfo, 0, sizeof(SF_INFO));
-      sfinfo.frames = -1;
-      sfinfo.samplerate = int(sampleRate + 0.5);
-      sfinfo.channels = 2;
-      sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-      soundFile = sf_open(fileName.c_str(), SFM_WRITE, &sfinfo);
-      if (!soundFile)
-        throw Exception("error opening output sound file");
       outputFileName = fileName;
+      if (sampleRate > 0.0f) {
+        try {
+          openOutputFile_();
+        }
+        catch (...) {
+          outputFileName = "";
+          throw;
+        }
+      }
     }
   }
 
   void AudioOutput::sendAudioData(const int16_t *buf, size_t nFrames)
   {
-    // NOTE: AudioOutput::sendAudioData() should be called by derived classes
-    // so that the sound file can be written
-    if (soundFile) {
-      // need to cast away const qualification to work around compile
-      // error with old versions of libsndfile
+    // MP3 encoding is deliberately isolated from the emulation/audio thread.
+    // The producer only copies PCM into an 8-second lock-free SPSC ring;
+    // there is no mutex or condition-variable signal on this path.
+    // The MP3 codec runs exclusively on MP3WriterThread. On macOS this
+    // calls libmp3lame directly, bypassing libsndfile's MP3 writer.
+    if (mp3Writer) {
+      std::string errorText;
+      if (!mp3Writer->push(buf, nFrames, errorText)) {
+        outputFileName = "";
+        throw Exception(errorText.c_str());
+      }
+    }
+    else if (soundFile) {
+      // WAV/FLAC writing is cheap enough to retain the historical direct path.
       if (sf_writef_short(soundFile,
                           reinterpret_cast<short *>(const_cast<int16_t *>(buf)),
                           sf_count_t(nFrames))
@@ -187,6 +479,13 @@ namespace Ep128Emu {
         throw Exception("error writing sound file -- is the disk full ?");
       }
     }
+  }
+
+  void AudioOutput::setEmulationPaused(bool paused)
+  {
+    (void) paused;
+    // Host audio may have platform-specific queued device output; recording
+    // continues to use the original PCM source and must never be truncated.
   }
 
   void AudioOutput::closeDevice()
@@ -213,6 +512,9 @@ namespace Ep128Emu {
       paInitialized(false),
       disableRingBuffer(false),
       usingBlockingInterface(false),
+#ifdef WIN32
+      emulationPaused(false),
+#endif
       paLockTimeout(0U),
       writeBufIndex(0),
       readBufIndex(0),
@@ -220,6 +522,14 @@ namespace Ep128Emu {
       latencyFramesHW(4096L),
       nextTime(0.0),
       closeDeviceLock(true)
+#ifdef __APPLE__
+      , usingMacAudioRing(false),
+      macAudioRingCapacityFrames(0),
+      macAudioRingStartThresholdFrames(0),
+      macAudioWriteFrame(0ULL),
+      macAudioReadFrame(0ULL),
+      macAudioRingStarted(false)
+#endif
   {
     // initialize PortAudio
     if (isPortAudioError("calling Pa_Initialize()", Pa_Initialize()))
@@ -248,6 +558,45 @@ namespace Ep128Emu {
       (void) isPortAudioError("calling Pa_Terminate()", Pa_Terminate());
       paInitialized = false;
     }
+  }
+
+  void AudioOutput_PortAudio::setEmulationPaused(bool paused)
+  {
+#ifdef WIN32
+    // This is invoked only on VMThread, never from PortAudio's callback:
+    // the 2 ms VM run quantum is complete and no Pa_WriteStream is active.
+    // Pa_AbortStream (unlike Pa_StopStream) discards queued host samples so
+    // Windows tape audio cannot play out for seconds after F10 Pause.
+    if (emulationPaused == paused)
+      return;
+    emulationPaused = paused;
+    if (!paStream)
+      return;
+    if (paused) {
+      (void) isPortAudioError("aborting output on Pause",
+                             Pa_AbortStream(paStream));
+      return;
+    }
+    // The previous stream is stopped. Discard all pending software buffers
+    // before restarting, otherwise the callback can replay pre-Pause sound.
+    // VMThread exclusively owns the producer and PortAudio has stopped its
+    // callback, so rebuilding buffer handshakes here is race-free.
+    const size_t bufferCount = buffers.size();
+    const size_t samplesPerBuffer =
+        (bufferCount ? buffers[0].audioData.size() : 0U);
+    buffers.clear();
+    buffers.resize(bufferCount);
+    for (size_t i=0; i<bufferCount; ++i)
+      buffers[i].audioData.resize(samplesPerBuffer, int16_t(0));
+    writeBufIndex = 0;
+    readBufIndex = 0;
+    timer_.reset();
+    nextTime = 0.0;
+    (void) isPortAudioError("restarting output after Pause",
+                           Pa_StartStream(paStream));
+#else
+    (void) paused;
+#endif
   }
 
   void AudioOutput_PortAudio::sendAudioData(const int16_t *buf, size_t nFrames)
@@ -307,6 +656,27 @@ namespace Ep128Emu {
       else
 #endif
       {
+#ifdef __APPLE__
+        if (usingMacAudioRing) {
+          unsigned long long w =
+              macAudioWriteFrame.load(std::memory_order_relaxed);
+          unsigned long long r =
+              macAudioReadFrame.load(std::memory_order_acquire);
+          for (size_t i = 0; i < nFrames; i++) {
+            if ((w - r) >=
+                (unsigned long long) macAudioRingCapacityFrames) {
+              r = macAudioReadFrame.load(std::memory_order_acquire);
+              continue;
+            }
+            size_t p = size_t(w % macAudioRingCapacityFrames) << 1;
+            macAudioRing[p] = buf[(i << 1) + 0];
+            macAudioRing[p + 1] = buf[(i << 1) + 1];
+            w++;
+          }
+          macAudioWriteFrame.store(w, std::memory_order_release);
+        }
+        else
+#endif
         for (size_t i = 0; i < nFrames; i++) {
           Buffer& buf_ = buffers[writeBufIndex];
           buf_.audioData[buf_.writePos++] = buf[(i << 1) + 0];
@@ -355,6 +725,15 @@ namespace Ep128Emu {
     writeBufIndex = 0;
     readBufIndex = 0;
     buffers.clear();
+#ifdef __APPLE__
+    usingMacAudioRing = false;
+    macAudioRing.clear();
+    macAudioRingCapacityFrames = 0;
+    macAudioRingStartThresholdFrames = 0;
+    macAudioWriteFrame.store(0ULL, std::memory_order_relaxed);
+    macAudioReadFrame.store(0ULL, std::memory_order_relaxed);
+    macAudioRingStarted.store(false, std::memory_order_relaxed);
+#endif
     // call base class to reset internal state
     AudioOutput::closeDevice();
   }
@@ -427,6 +806,47 @@ namespace Ep128Emu {
 #else
     (void) outTime;
 #endif
+#ifdef __APPLE__
+    if (p->usingMacAudioRing) {
+      size_t copiedFrames = 0;
+      unsigned long long r =
+          p->macAudioReadFrame.load(std::memory_order_relaxed);
+      unsigned long long w =
+          p->macAudioWriteFrame.load(std::memory_order_acquire);
+      unsigned long long available = w - r;
+      bool started = p->macAudioRingStarted.load(std::memory_order_relaxed);
+      if (!started &&
+          available >=
+              (unsigned long long) p->macAudioRingStartThresholdFrames) {
+        started = true;
+        p->macAudioRingStarted.store(true, std::memory_order_relaxed);
+      }
+      if (started) {
+        copiedFrames = size_t(available < (unsigned long long) frameCount ?
+                              available : (unsigned long long) frameCount);
+        for (size_t j = 0; j < copiedFrames; j++) {
+          size_t q = size_t((r + j) % p->macAudioRingCapacityFrames) << 1;
+          buf[(j << 1) + 0] = p->macAudioRing[q];
+          buf[(j << 1) + 1] = p->macAudioRing[q + 1];
+        }
+        if (copiedFrames)
+          p->macAudioReadFrame.store(r + copiedFrames,
+                                     std::memory_order_release);
+        if (copiedFrames < frameCount)
+          p->macAudioRingStarted.store(false, std::memory_order_relaxed);
+      }
+      for (size_t j = copiedFrames; j < frameCount; j++) {
+        buf[(j << 1) + 0] = 0;
+        buf[(j << 1) + 1] = 0;
+      }
+      p->closeDeviceLock.notify();
+#ifndef USING_OLD_PORTAUDIO_API
+      return int(paContinue);
+#else
+      return 0;
+#endif
+    }
+#endif
     if (nFrames > (p->buffers[p->readBufIndex].audioData.size() >> 1))
       nFrames = p->buffers[p->readBufIndex].audioData.size() >> 1;
     nFrames <<= 1;
@@ -449,6 +869,15 @@ namespace Ep128Emu {
 
   void AudioOutput_PortAudio::openDevice()
   {
+#ifdef __APPLE__
+    usingMacAudioRing = false;
+    macAudioRing.clear();
+    macAudioRingCapacityFrames = 0;
+    macAudioRingStartThresholdFrames = 0;
+    macAudioWriteFrame.store(0ULL, std::memory_order_relaxed);
+    macAudioReadFrame.store(0ULL, std::memory_order_relaxed);
+    macAudioRingStarted.store(false, std::memory_order_relaxed);
+#endif
     writeBufIndex = 0;
     readBufIndex = 0;
     paStream = (PaStream *) 0;
@@ -481,6 +910,7 @@ namespace Ep128Emu {
     if (devIndex >= devCnt)
       throw Exception("device number is out of range");
     usingBlockingInterface = false;
+    bool    usingCoreAudioInterface = false;
     int     nPeriodsHW_ = nPeriodsHW;
 #ifndef USING_OLD_PORTAUDIO_API
     int     nPeriodsSW_ = nPeriodsSW;
@@ -502,6 +932,18 @@ namespace Ep128Emu {
         else {
           // ASIO or WDM-KS: force double buffering
           nPeriodsHW_ = 2;
+          nPeriodsSW_ = (nPeriodsSW_ >= 2 ? nPeriodsSW_ : 2);
+        }
+#  elif defined(__APPLE__)
+        else if (hostApiInfo->type == paCoreAudio) {
+          usingCoreAudioInterface = true;
+          usingMacAudioRing = true;
+          // CoreAudio is a callback API; do not split the requested latency
+          // by the historical generic hardware-buffer count.
+          nPeriodsHW_ = 2;
+          nPeriodsSW_ = (nPeriodsSW_ >= 2 ? nPeriodsSW_ : 2);
+        }
+        else {
           nPeriodsSW_ = (nPeriodsSW_ >= 2 ? nPeriodsSW_ : 2);
         }
 #  else
@@ -528,6 +970,10 @@ namespace Ep128Emu {
     }
     if (periodSize > 16384)
       periodSize = 16384;
+#ifdef __APPLE__
+    if (usingCoreAudioInterface && periodSize < 128)
+      periodSize = 128;
+#endif
     latencyFramesHW = long(nPeriodsHW_ - 1) * long(periodSize);
     if (disableRingBuffer) {
       paLockTimeout = (unsigned int) (double(latencyFramesHW) * 1000.0
@@ -543,6 +989,16 @@ namespace Ep128Emu {
       for (int j = 0; j < (periodSize << 1); j++)
         buffers[i].audioData[j] = 0;
     }
+#ifdef __APPLE__
+    if (usingMacAudioRing) {
+      // Minimum 1024 frames capacity and 512 frames prefill with the 128-frame
+      // CoreAudio floor: enough headroom for short background scheduler jitter.
+      size_t ringPeriods = size_t(nPeriodsSW_ >= 8 ? nPeriodsSW_ : 8);
+      macAudioRingCapacityFrames = size_t(periodSize) * ringPeriods;
+      macAudioRingStartThresholdFrames = size_t(periodSize) * 4U;
+      macAudioRing.resize(macAudioRingCapacityFrames << 1, int16_t(0));
+    }
+#endif
     // open audio stream
 #ifndef USING_OLD_PORTAUDIO_API
     PaStreamParameters  streamParams;
@@ -585,6 +1041,12 @@ namespace Ep128Emu {
       throw Exception("error opening audio device");
     }
     Pa_StartStream(paStream);
+#ifdef WIN32
+    // The audio device can be reconfigured while the VM is paused. New
+    // streams must not resume queued sound until the guest itself resumes.
+    if (emulationPaused)
+      (void) Pa_AbortStream(paStream);
+#endif
   }
 
   // --------------------------------------------------------------------------

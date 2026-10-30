@@ -313,13 +313,15 @@ namespace Ep128Emu {
 
   VideoCapture_RLE8::VideoCapture_RLE8(
       void (*indexToRGBFunc)(uint8_t color, float& r, float& g, float& b),
-      int frameRate_)
+      int frameRate_,
+      bool preserveAllVideoFrames_)
     : VideoCapture(frameRate_),
       tmpFrameBuf(videoWidth, videoHeight),
       outputFrameBuf(videoWidth, videoHeight),
       frameSizes((uint32_t *) 0),
       cycleCnt(2),
       prvOddFrame(false),
+      preserveAllVideoFrames(preserveAllVideoFrames_),
       colormap((uint8_t *) 0)
   {
     try {
@@ -614,6 +616,12 @@ namespace Ep128Emu {
   {
     if (!aviFile)
       return;
+    // Frame-accurate pixel-graphics MP4: preserve EVERY scheduled video frame
+    // as a decodable nonempty AVI packet. This flag is never enabled for
+    // ordinary RLE8 AVI or compatible MP4; do not alter their sparse encoding.
+    // It is essential that this happens before the empty-frame optimization.
+    if (preserveAllVideoFrames)
+      frameChanged = true;
     if (!frameChanged) {
       if (framesWritten == 0 || duplicateFrames >= size_t(frameRate))
         frameChanged = true;

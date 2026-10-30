@@ -1,0 +1,39 @@
+OBJCC = /usr/bin/clang
+CC = /usr/bin/clang
+CXX = /usr/bin/clang++
+LD = /usr/bin/clang++
+AR = /usr/bin/ar
+GCC_OPTS = -O2 -arch arm64 -mmacosx-version-min=11.0 -Wno-import -Wno-multichar
+OBJC_OPTS = -std=gnu99
+C_OPTS = -std=gnu99
+CXX_OPTS = -std=gnu++14
+AUTODEPENDENCY_CFLAGS=-MMD -MF$(@:.o=.d) -MT$@
+ALL_OBJCFLAGS = $(OBJC_OPTS) $(GCC_OPTS) $(CFLAGS) $(OBJCFLAGS)
+ALL_CFLAGS = $(C_OPTS) $(GCC_OPTS) $(CFLAGS)
+ALL_CXXFLAGS = $(CXX_OPTS) $(GCC_OPTS) $(CXXFLAGS)
+SOURCE_DIR = .
+BUILD_DIR = Build-ep128emu-arm64
+
+include Makefile.common
+
+all: libUniversalDetector.a
+
+libUniversalDetector.a: $(LIBRARY_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
+
+.SUFFIXES: .o .c .m .cpp
+
+$(BUILD_DIR)/%.o: $(SOURCE_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ALL_CFLAGS) $(AUTODEPENDENCY_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(SOURCE_DIR)/%.m
+	@mkdir -p $(dir $@)
+	$(OBJCC) $(ALL_OBJCFLAGS) $(AUTODEPENDENCY_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(SOURCE_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(ALL_CXXFLAGS) $(AUTODEPENDENCY_CFLAGS) -c $< -o $@
+
+-include $(LIBRARY_OBJS:.o=.d)

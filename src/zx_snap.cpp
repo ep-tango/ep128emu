@@ -29,6 +29,9 @@ namespace ZX128 {
 
   void ZX128VM::saveState(Ep128Emu::File& f)
   {
+    if (speccyDOS || betaDisk)
+      throw Ep128Emu::Exception(
+          "SpeccyDOS trial: snapshots disabled until expansion state is serializable");
     memory.saveState(f);
     ula.saveState(f);
     ay3.saveState(f);
@@ -50,6 +53,9 @@ namespace ZX128 {
 
   void ZX128VM::saveMachineConfiguration(Ep128Emu::File& f)
   {
+    if (speccyDOS || betaDisk)
+      throw Ep128Emu::Exception(
+          "SpeccyDOS trial: snapshots disabled until expansion state is serializable");
     Ep128Emu::File::Buffer  buf;
     buf.setPosition(0);
     buf.writeUInt32(0x01000000);        // version number
@@ -96,8 +102,46 @@ namespace ZX128 {
 
   // --------------------------------------------------------------------------
 
+  bool ZX128VM::getIsRewindRestoreSupported() const
+  {
+    return !speccyDOS && !betaDisk;
+  }
+
+  bool ZX128VM::getRewindRuntimeState(
+      Ep128Emu::VirtualMachine::RewindRuntimeState& state) const
+  {
+    if (speccyDOS || betaDisk)
+      return false;
+    state.cyclePhaseLow = ulaCyclesRemainingL;
+    state.cyclePhaseHigh = ulaCyclesRemainingH;
+    state.valid = true;
+    return true;
+  }
+
+  bool ZX128VM::restoreRewindRuntimeState(
+      const Ep128Emu::VirtualMachine::RewindRuntimeState& state)
+  {
+    if (speccyDOS || betaDisk)
+      return false;
+    if (!state.valid)
+      return false;
+    ulaCyclesRemainingL = state.cyclePhaseLow;
+    ulaCyclesRemainingH = state.cyclePhaseHigh;
+    return true;
+  }
+
+  void ZX128VM::setRewindRestoreMode(bool enabled)
+  {
+    rewindRestoreMode = enabled;
+    if (enabled)
+      snapshotLoadFlag = false;
+  }
+
   void ZX128VM::loadState(Ep128Emu::File::Buffer& buf)
   {
+    if (speccyDOS || betaDisk)
+      throw Ep128Emu::Exception(
+          "SpeccyDOS trial: cannot load a snapshot while expansion active");
     buf.setPosition(0);
     // check version number
     unsigned int  version = buf.readUInt32();
@@ -105,9 +149,14 @@ namespace ZX128 {
       buf.setPosition(buf.getDataSize());
       throw Ep128Emu::Exception("incompatible zx128 snapshot version");
     }
-    stopDemo();
-    snapshotLoadFlag = true;
-    z80.closeTapeFile();
+    if (!rewindRestoreMode) {
+      stopDemo();
+      snapshotLoadFlag = true;
+      z80.closeTapeFile();
+    }
+    else {
+      snapshotLoadFlag = false;
+    }
     try {
       spectrum128PageRegister = buf.readByte();
       for (uint8_t i = 0x08; i < 0x80; i++)
@@ -135,6 +184,8 @@ namespace ZX128 {
 
   void ZX128VM::loadMachineConfiguration(Ep128Emu::File::Buffer& buf)
   {
+    if (speccyDOS || betaDisk)
+      throw Ep128Emu::Exception("Spectrum expansion: cannot load configuration while active");
     buf.setPosition(0);
     // check version number
     unsigned int  version = buf.readUInt32();

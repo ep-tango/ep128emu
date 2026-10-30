@@ -728,6 +728,7 @@ namespace Ep128 {
     int_1_active = 0;
     int_2_active = 0;
     audioOutput = 0;
+    rewindRestoreMode = false;
     tape_input = 0;
     tape_input_level = 0;
     this->reset(true);
@@ -1148,7 +1149,11 @@ namespace Ep128 {
     int_1hz_active = (buf.readBoolean() ? 1 : 0);
     int_1_active = (buf.readBoolean() ? 1 : 0);
     int_2_active = (buf.readBoolean() ? 1 : 0);
-    audioOutput = buf.readUInt32() & 0x01FF01FF;
+    {
+      uint32_t savedAudioOutput = buf.readUInt32();
+      audioOutput = (rewindRestoreMode ? savedAudioOutput
+                                      : (savedAudioOutput & 0x01FF01FFU));
+    }
     writePort(0x10, buf.readByte());
     writePort(0x11, buf.readByte());
     writePort(0x12, buf.readByte());

@@ -30,13 +30,19 @@
 #  include <porttime.h>
 #endif
 #include <vector>
+#include <atomic>
+#include <atomic>
 
 namespace Ep128Emu {
 
   class AudioOutput {
    private:
+    class MP3WriterThread;
     std::string outputFileName;
     SNDFILE *soundFile;
+    MP3WriterThread *mp3Writer;
+    void closeOutputFile_();
+    void openOutputFile_();
    protected:
     int     deviceNumber;
     float   sampleRate;
@@ -68,6 +74,9 @@ namespace Ep128Emu {
      * (in 16 bit signed PCM format) to the audio output device and file.
      */
     virtual void sendAudioData(const int16_t *buf, size_t nFrames);
+    // Called by the VM thread at emulation Pause/Resume boundaries. The
+    // default implementation does not affect recorded PCM output.
+    virtual void setEmulationPaused(bool paused);
     /*!
      * Close the audio device.
      */
@@ -99,6 +108,9 @@ namespace Ep128Emu {
     bool          paInitialized;
     bool          disableRingBuffer;
     bool          usingBlockingInterface;
+#ifdef WIN32
+    bool          emulationPaused;
+#endif
     unsigned int  paLockTimeout;
     std::vector< Buffer >   buffers;
     size_t        writeBufIndex;
@@ -108,6 +120,15 @@ namespace Ep128Emu {
     Timer         timer_;
     double        nextTime;
     ThreadLock    closeDeviceLock;
+#ifdef __APPLE__
+    bool          usingMacAudioRing;
+    std::vector< int16_t > macAudioRing;
+    size_t        macAudioRingCapacityFrames;
+    size_t        macAudioRingStartThresholdFrames;
+    std::atomic<unsigned long long> macAudioWriteFrame;
+    std::atomic<unsigned long long> macAudioReadFrame;
+    std::atomic<bool> macAudioRingStarted;
+#endif
 #ifndef USING_OLD_PORTAUDIO_API
     static int portAudioCallback(const void *input, void *output,
                                  unsigned long frameCount,
@@ -123,6 +144,7 @@ namespace Ep128Emu {
     AudioOutput_PortAudio();
     virtual ~AudioOutput_PortAudio();
     virtual void sendAudioData(const int16_t *buf, size_t nFrames);
+    virtual void setEmulationPaused(bool paused);
     virtual void closeDevice();
     virtual std::vector< std::string > getDeviceList();
    protected:

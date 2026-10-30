@@ -96,8 +96,14 @@ namespace Ep128Emu {
     void createKey(const std::string& name, std::string& ref);
     void saveState(File::Buffer& buf);
     void saveState(File& f);
-    void saveState(const char *fileName,
-                   bool useHomeDirectory = false);  // save in ASCII format
+    void saveState(const char *fileName, bool useHomeDirectory = false,
+                   const char *headerComment = (const char *) 0);
+    static void saveStateBufferAsASCII(
+        File::Buffer& buf, const char *fileName,
+        bool useHomeDirectory = false,
+        const char *headerComment = (const char *) 0);
+    static int getMachineTypeMetadata(const char *fileName,
+                                      bool useHomeDirectory = false);
     void loadState(File::Buffer& buf);
     void loadState(const char *fileName,
                    bool useHomeDirectory = false);  // load ASCII format file

@@ -171,6 +171,93 @@ namespace Ep128 {
 
   // --------------------------------------------------------------------------
 
+  bool Ep128VM::getIsRewindRestoreSupported() const
+  {
+    return true;
+  }
+
+  bool Ep128VM::getRewindRuntimeState(
+      Ep128Emu::VirtualMachine::RewindRuntimeState& state) const
+  {
+    state.cyclePhaseLow = nickCyclesRemainingL;
+    state.cyclePhaseHigh = nickCyclesRemainingH;
+    // Preserve sound-only click debounce and the ACCEPTED 0.34 motor
+    // spin-up as independent rewind runtime state.
+    // v2 host-only rewind data: neither timer changes the tape file format.
+    // Never modify the external .ep128s snapshot file format.
+    state.machineData.resize(14);
+    state.machineData[0] = 2U;
+    for (int i = 0; i < 4; i++) {
+      state.machineData[size_t(i + 1)] =
+          uint8_t(tapeSpinUpSamplesRemaining >> (8 * i));
+      state.machineData[size_t(i + 5)] =
+          uint8_t(tapeRelayPendingNickCycles >> (8 * i));
+      state.machineData[size_t(i + 9)] =
+          uint8_t(tapeRelayEngagementCount >> (8 * i));
+    }
+    state.machineData[13] = uint8_t(getIsTapeMotorOn());
+    state.valid = true;
+    return true;
+  }
+
+  bool Ep128VM::restoreRewindRuntimeState(
+      const Ep128Emu::VirtualMachine::RewindRuntimeState& state)
+  {
+    if (!state.valid)
+      return false;
+    nickCyclesRemainingL = state.cyclePhaseLow;
+    nickCyclesRemainingH = state.cyclePhaseHigh;
+    cancelPendingTapeRelayRelease();
+    if (state.machineData.size() == 14U && state.machineData[0] == 2U) {
+      uint32_t startup = 0U, pending = 0U, engagements = 0U;
+      for (int i = 0; i < 4; i++) {
+        startup |= uint32_t(state.machineData[size_t(i + 1)]) << (8 * i);
+        pending |= uint32_t(state.machineData[size_t(i + 5)]) << (8 * i);
+        engagements |= uint32_t(state.machineData[size_t(i + 9)]) << (8 * i);
+      }
+      tapeSpinUpSamplesRemaining = startup;
+      tapeRelayEngagementCount = engagements;
+      setTapeMotorState(bool(state.machineData[13]));
+      tapeRelayPendingNickCycles = pending;
+      tapeRelaySoundArmed = (pending == 0U && remoteControlState == 0U);
+      if (pending)
+        setCallback(&tapeRelayReleaseCallback, this, true);
+      tapeSpinUpRemoteArmed = false;
+      tapeSpinUpRewindRestored = true;
+    }
+    else if (state.machineData.size() == 5U && state.machineData[0] == 1U) {
+      uint32_t n = 0U;
+      for (int i = 0; i < 4; i++)
+        n |= uint32_t(state.machineData[size_t(i + 1)]) << (8 * i);
+      tapeSpinUpSamplesRemaining = n;
+      tapeRelayPendingNickCycles = 0U;
+      tapeRelayEngagementCount = 0U;
+      tapeRelaySoundArmed = (remoteControlState == 0U);
+      setTapeMotorState(bool(remoteControlState));
+      tapeSpinUpRemoteArmed = false;
+      // Reconstructing a rewind frame must not re-arm the 1s delay.
+      tapeSpinUpRewindRestored = true;
+    }
+    else {
+      tapeSpinUpSamplesRemaining = 0U;
+      tapeRelayPendingNickCycles = 0U;
+      tapeRelayEngagementCount = 0U;
+      tapeRelaySoundArmed = (remoteControlState == 0U);
+      setTapeMotorState(bool(remoteControlState));
+      tapeSpinUpRemoteArmed = false;
+      tapeSpinUpRewindRestored = true;
+    }
+    return true;
+  }
+
+  void Ep128VM::setRewindRestoreMode(bool enabled)
+  {
+    rewindRestoreMode = enabled;
+    dave.setRewindRestoreMode(enabled);
+    if (enabled)
+      snapshotLoadFlag = false;
+  }
+
   void Ep128VM::loadState(Ep128Emu::File::Buffer& buf)
   {
     buf.setPosition(0);
@@ -181,17 +268,30 @@ namespace Ep128 {
       buf.setPosition(buf.getDataSize());
       throw Ep128Emu::Exception("incompatible ep128 snapshot version");
     }
-    remoteControlState = 0x00;
-    setTapeMotorState(false);
-    stopDemo();
-    snapshotLoadFlag = true;
-    // reset floppy and IDE emulation, as the state of these is not saved
-    resetFloppyDrives(true);
-    ideInterface->reset(3);
-    z80.closeAllFiles();
+    if (!rewindRestoreMode) {
+      remoteControlState = 0x00;
+      cancelPendingTapeRelayRelease();
+      setTapeMotorState(false);
+      tapeRelayEngagementCount = 0U;
+      tapeSpinUpSamplesRemaining = 0U;
+      tapeSpinUpRewindRestored = false;
+      tapeSpinUpRemoteArmed = false;
+      stopDemo();
+      snapshotLoadFlag = true;
+      // Normal snapshot files do not include complete external I/O state,
+      // therefore the historical load path intentionally resets it.
+      resetFloppyDrives(true);
+      ideInterface->reset(3);
+      z80.closeAllFiles();
 #ifdef ENABLE_MIDI_PORT
-    midiPortWriteCallback((void *) this, 0xF6, 0x00);
+      midiPortWriteCallback((void *) this, 0xF6, 0x00);
 #endif
+    }
+    else {
+      // Rewind stays on the same live timeline. Do not trigger the normal
+      // post-snapshot keyboard clear or destructive external-I/O reset.
+      snapshotLoadFlag = false;
+    }
     try {
 #ifdef ENABLE_SDEXT
       if (!(version & 0x00010000)) {

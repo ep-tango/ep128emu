@@ -21,6 +21,7 @@
 #define EP128EMU_DISPLAY_HPP
 
 #include "ep128emu.hpp"
+#include <atomic>
 
 #define EP128EMU_VSYNC_MIN_LINES        290
 #define EP128EMU_VSYNC_MAX_LINES        351
@@ -29,6 +30,13 @@
 namespace Ep128Emu {
 
   class VideoDisplay {
+   private:
+    std::atomic<uint64_t> frameSequenceNumber;
+   protected:
+    inline void notifyFrameDone()
+    {
+      frameSequenceNumber.fetch_add(1ULL, std::memory_order_relaxed);
+    }
    public:
     class DisplayParameters {
      public:
@@ -92,6 +100,8 @@ namespace Ep128Emu {
        * (calculated as (screen_width / screen_height) / (X_res / Y_res))
        */
       float   pixelAspectRatio;
+      /*! Use exact integer scaling of the raw 768x576 display raster. */
+      bool    pixelPerfect;
      private:
       static void defaultIndexToRGBFunc(uint8_t color,
                                         float& red, float& green, float& blue);
@@ -102,11 +112,35 @@ namespace Ep128Emu {
       DisplayParameters& operator=(const DisplayParameters& dp);
       void applyColorCorrection(float& red, float& green, float& blue) const;
     };
+    class RewindState {
+     public:
+      int   curLine;
+      int   vsyncCnt;
+      bool  vsyncState;
+      bool  oddFrame;
+      bool  valid;
+      RewindState()
+        : curLine(0), vsyncCnt(0), vsyncState(false), oddFrame(false),
+          valid(false)
+      {
+      }
+    };
+    // ----------------
     // ----------------
     VideoDisplay()
+      : frameSequenceNumber(0ULL)
     {
     }
     virtual ~VideoDisplay();
+    /*!
+     * Monotonic count of completed emulated video frames. This is used by
+     * the host-side paused frame-advance control; it does not affect target
+     * timing or emulated memory.
+     */
+    inline uint64_t getFrameSequenceNumber() const
+    {
+      return frameSequenceNumber.load(std::memory_order_relaxed);
+    }
     /*!
      * Set color correction and other display parameters
      * (see 'struct DisplayParameters' above for more information).
@@ -139,6 +173,16 @@ namespace Ep128Emu {
      * the current line (0 to 56).
      */
     virtual void vsyncStateChange(bool newState, unsigned int currentSlot_) = 0;
+    /*!
+     * Save/restore host-side video synchronization state used by paused
+     * rewind. Displays that do not need or support this can return false.
+     *
+     * If resetOutput is true, restoreRewindState() must also discard any
+     * queued/previously buffered host frames before new line data is accepted.
+     */
+    virtual bool getRewindState(RewindState& state) const;
+    virtual bool restoreRewindState(const RewindState& state,
+                                    bool resetOutput);
     /*!
      * If enabled, limit the number of frames displayed per second to a
      * maximum of 50.

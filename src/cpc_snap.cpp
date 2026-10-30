@@ -105,6 +105,38 @@ namespace CPC464 {
 
   // --------------------------------------------------------------------------
 
+  bool CPC464VM::getIsRewindRestoreSupported() const
+  {
+    return true;
+  }
+
+  bool CPC464VM::getRewindRuntimeState(
+      Ep128Emu::VirtualMachine::RewindRuntimeState& state) const
+  {
+    state.cyclePhaseLow = crtcCyclesRemainingL;
+    state.cyclePhaseHigh = crtcCyclesRemainingH;
+    videoRenderer.getRewindState(state.machineData);
+    state.valid = true;
+    return true;
+  }
+
+  bool CPC464VM::restoreRewindRuntimeState(
+      const Ep128Emu::VirtualMachine::RewindRuntimeState& state)
+  {
+    if (!state.valid)
+      return false;
+    crtcCyclesRemainingL = state.cyclePhaseLow;
+    crtcCyclesRemainingH = state.cyclePhaseHigh;
+    return videoRenderer.restoreRewindState(state.machineData);
+  }
+
+  void CPC464VM::setRewindRestoreMode(bool enabled)
+  {
+    rewindRestoreMode = enabled;
+    if (enabled)
+      snapshotLoadFlag = false;
+  }
+
   void CPC464VM::loadState(Ep128Emu::File::Buffer& buf)
   {
     buf.setPosition(0);
@@ -114,10 +146,16 @@ namespace CPC464 {
       buf.setPosition(buf.getDataSize());
       throw Ep128Emu::Exception("incompatible cpc464 snapshot version");
     }
-    stopDemo();
-    snapshotLoadFlag = true;
-    // reset floppy emulation, as its state is not saved
-    floppyDrive->reset();
+    if (!rewindRestoreMode) {
+      stopDemo();
+      snapshotLoadFlag = true;
+      // Normal snapshot files do not save floppy controller state.
+      floppyDrive->reset();
+    }
+    else {
+      // Rewind stays on the same live timeline: preserve external I/O state.
+      snapshotLoadFlag = false;
+    }
     try {
       for (uint8_t i = 0; i <= 16; i++)
         videoRenderer.setColor(i, buf.readByte());

@@ -150,6 +150,7 @@ namespace CPC464 {
     // true after loading a snapshot; if not playing a demo as well, the
     // keyboard state will be cleared
     bool      snapshotLoadFlag;
+    bool      rewindRestoreMode;
     // used for counting time between demo events (in CRTC cycles)
     uint64_t  demoTimeCnt;
     FDC765_CPC  *floppyDrive;
@@ -244,7 +245,8 @@ namespace CPC464 {
             (void (*)(void *, const char *)) 0,
         void (*fileNameCallback_)(void *userData, std::string& fileName) =
             (void (*)(void *, std::string&)) 0,
-        void *userData_ = (void *) 0);
+        void *userData_ = (void *) 0,
+        bool preserveAllVideoFrames_ = false);
     /*!
      * Set output file name for video capture (an empty file name means no
      * file is written). openVideoCapture() should be called first.
@@ -262,7 +264,8 @@ namespace CPC464 {
      */
     virtual void setDiskImageFile(int n, const std::string& fileName_,
                                   int nTracks_ = -1, int nSides_ = 2,
-                                  int nSectorsPerTrack_ = 9);
+                                  int nSectorsPerTrack_ = 9,
+                                  int bytesPerSector_ = 512);
     /*!
      * Returns the current state of the disk drive LEDs, which is the sum
      * of any of the following values:
@@ -467,6 +470,12 @@ namespace CPC464 {
      * playing a demo.
      */
     virtual bool getIsPlayingDemo() const;
+    virtual bool getIsRewindRestoreSupported() const;
+    virtual bool getRewindRuntimeState(
+        Ep128Emu::VirtualMachine::RewindRuntimeState& state) const;
+    virtual bool restoreRewindRuntimeState(
+        const Ep128Emu::VirtualMachine::RewindRuntimeState& state);
+    virtual void setRewindRestoreMode(bool enabled);
     // ----------------
     virtual void loadState(Ep128Emu::File::Buffer&);
     virtual void loadMachineConfiguration(Ep128Emu::File::Buffer&);
