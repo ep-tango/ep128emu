@@ -26,7 +26,11 @@
 #include <FL/gl.h>
 #include <FL/Fl_Window.H>
 #include <FL/Fl_Gl_Window.H>
-#include <GL/glext.h>
+#ifdef __APPLE__
+#  include <OpenGL/glext.h>
+#else
+#  include <GL/glext.h>
+#endif
 
 #include "fldisp.hpp"
 #include "gldisp.hpp"
@@ -477,6 +481,8 @@ namespace Ep128Emu {
       lastLineNum(-2),
       displayFrameRate(60.0),
       inputFrameRate(50.0),
+      rewindRingResetPending(false),
+      rewindGLClearPending(false),
       ringBufferReadPos(0.0),
       ringBufferWritePos(2),
       shaderMode(0),
@@ -887,51 +893,87 @@ namespace Ep128Emu {
 
   void OpenGLDisplay::displayFrame()
   {
-    glViewport(0, 0, GLsizei(this->w()), GLsizei(this->h()));
+#ifdef WIN32
+    // FLTK 1.4 Windows HiDPI: OpenGL viewport dimensions are framebuffer pixels.
+    int viewportW = this->pixel_w();
+    int viewportH = this->pixel_h();
+#else
+    int viewportW = (displayParameters.pixelPerfect ? this->pixel_w() : this->w());
+    int viewportH = (displayParameters.pixelPerfect ? this->pixel_h() : this->h());
+#endif
+    glViewport(0, 0, GLsizei(viewportW), GLsizei(viewportH));
     glPushMatrix();
     glOrtho(0.0, 1.0, 1.0, 0.0, 0.0, 1.0);
 
-    double  x0, y0, x1, y1;
-    double  aspectScale = (768.0 / 576.0)
-                          / ((double(this->w()) / double(this->h()))
-                             * double(displayParameters.pixelAspectRatio));
-    x0 = 0.0;
-    y0 = 0.0;
-    x1 = 1.0;
-    y1 = 1.0;
-    if (aspectScale > 1.0001) {
-      y0 = 0.5 - (0.5 / aspectScale);
+    double  x0 = 0.0;
+    double  y0 = 0.0;
+    double  x1 = 1.0;
+    double  y1 = 1.0;
+    if (displayParameters.pixelPerfect) {
+      int scale = viewportW / 768;
+      int sy = viewportH / 576;
+      if (sy < scale)
+        scale = sy;
+      if (scale < 1)
+        scale = 1;
+      int displayW = 768 * scale;
+      int displayH = 576 * scale;
+      x0 = double(viewportW - displayW) / (2.0 * double(viewportW));
+      y0 = double(viewportH - displayH) / (2.0 * double(viewportH));
+      x1 = 1.0 - x0;
       y1 = 1.0 - y0;
+
+      // Pixel-perfect content may not fill the viewport (fullscreen and
+      // non-4:3 host surfaces). Clear the complete backing surface first so
+      // the unused area is always a stable black border.
       glDisable(GL_TEXTURE_2D);
       glDisable(GL_BLEND);
       glColor4f(GLfloat(0), GLfloat(0), GLfloat(0), GLfloat(1));
       glBegin(GL_QUADS);
       glVertex2f(GLfloat(0.0), GLfloat(0.0));
       glVertex2f(GLfloat(1.0), GLfloat(0.0));
-      glVertex2f(GLfloat(1.0), GLfloat(y0));
-      glVertex2f(GLfloat(0.0), GLfloat(y0));
-      glVertex2f(GLfloat(0.0), GLfloat(y1));
-      glVertex2f(GLfloat(1.0), GLfloat(y1));
       glVertex2f(GLfloat(1.0), GLfloat(1.0));
       glVertex2f(GLfloat(0.0), GLfloat(1.0));
       glEnd();
     }
-    else if (aspectScale < 0.9999) {
-      x0 = 0.5 - (0.5 * aspectScale);
-      x1 = 1.0 - x0;
-      glDisable(GL_TEXTURE_2D);
-      glDisable(GL_BLEND);
-      glColor4f(GLfloat(0), GLfloat(0), GLfloat(0), GLfloat(1));
-      glBegin(GL_QUADS);
-      glVertex2f(GLfloat(0.0), GLfloat(0.0));
-      glVertex2f(GLfloat(x0), GLfloat(0.0));
-      glVertex2f(GLfloat(x0), GLfloat(1.0));
-      glVertex2f(GLfloat(0.0), GLfloat(1.0));
-      glVertex2f(GLfloat(x1), GLfloat(0.0));
-      glVertex2f(GLfloat(1.0), GLfloat(0.0));
-      glVertex2f(GLfloat(1.0), GLfloat(1.0));
-      glVertex2f(GLfloat(x1), GLfloat(1.0));
-      glEnd();
+    else {
+      double aspectScale = (768.0 / 576.0)
+                           / ((double(this->w()) / double(this->h()))
+                              * double(displayParameters.pixelAspectRatio));
+      if (aspectScale > 1.0001) {
+        y0 = 0.5 - (0.5 / aspectScale);
+        y1 = 1.0 - y0;
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_BLEND);
+        glColor4f(GLfloat(0), GLfloat(0), GLfloat(0), GLfloat(1));
+        glBegin(GL_QUADS);
+        glVertex2f(GLfloat(0.0), GLfloat(0.0));
+        glVertex2f(GLfloat(1.0), GLfloat(0.0));
+        glVertex2f(GLfloat(1.0), GLfloat(y0));
+        glVertex2f(GLfloat(0.0), GLfloat(y0));
+        glVertex2f(GLfloat(0.0), GLfloat(y1));
+        glVertex2f(GLfloat(1.0), GLfloat(y1));
+        glVertex2f(GLfloat(1.0), GLfloat(1.0));
+        glVertex2f(GLfloat(0.0), GLfloat(1.0));
+        glEnd();
+      }
+      else if (aspectScale < 0.9999) {
+        x0 = 0.5 - (0.5 * aspectScale);
+        x1 = 1.0 - x0;
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_BLEND);
+        glColor4f(GLfloat(0), GLfloat(0), GLfloat(0), GLfloat(1));
+        glBegin(GL_QUADS);
+        glVertex2f(GLfloat(0.0), GLfloat(0.0));
+        glVertex2f(GLfloat(x0), GLfloat(0.0));
+        glVertex2f(GLfloat(x0), GLfloat(1.0));
+        glVertex2f(GLfloat(0.0), GLfloat(1.0));
+        glVertex2f(GLfloat(x1), GLfloat(0.0));
+        glVertex2f(GLfloat(1.0), GLfloat(0.0));
+        glVertex2f(GLfloat(1.0), GLfloat(1.0));
+        glVertex2f(GLfloat(x1), GLfloat(1.0));
+        glEnd();
+      }
     }
     if (x0 >= x1 || y0 >= y1)
       return;
@@ -942,6 +984,10 @@ namespace Ep128Emu {
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &savedTextureID);
     glBindTexture(GL_TEXTURE_2D, textureID_);
     setTextureParameters(displayParameters.displayQuality);
+    if (displayParameters.pixelPerfect) {
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
 #ifdef WIN32
     if (!glBlendColor__)
       glBlendColor__ = (PFNGLBLENDCOLORPROC) wglGetProcAddress("glBlendColor");
@@ -1158,7 +1204,13 @@ namespace Ep128Emu {
 
   void OpenGLDisplay::initializeGLDisplay()
   {
-    glViewport(0, 0, GLsizei(this->w()), GLsizei(this->h()));
+#ifdef WIN32
+    glViewport(0, 0, GLsizei(this->pixel_w()), GLsizei(this->pixel_h()));
+#else
+    glViewport(0, 0,
+               GLsizei(displayParameters.pixelPerfect ? this->pixel_w() : this->w()),
+               GLsizei(displayParameters.pixelPerfect ? this->pixel_h() : this->h()));
+#endif
     glPushMatrix();
     glOrtho(0.0, 1.0, 1.0, 0.0, 0.0, 1.0);
     // on first call: initialize texture
@@ -1170,6 +1222,10 @@ namespace Ep128Emu {
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &savedTextureID);
     glBindTexture(GL_TEXTURE_2D, tmp);
     setTextureParameters(displayParameters.displayQuality);
+    if (displayParameters.pixelPerfect) {
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
     initializeTexture(displayParameters, textureSpace);
     glBindTexture(GL_TEXTURE_2D, GLuint(savedTextureID));
     // clear display
@@ -1217,8 +1273,46 @@ namespace Ep128Emu {
 
   void OpenGLDisplay::draw()
   {
+    // FLTK may recreate the native OpenGL context when a GL child window is
+    // hidden/shown (used by the macOS Retina backing switch) or when its GL
+    // mode changes. Object names from the old context are then invalid even
+    // though our cached numeric IDs are non-zero. Rebuild all context-owned
+    // resources whenever FLTK reports a new context.
+    if (!this->context_valid()) {
+      textureID = 0UL;
+      shaderMode = 0;
+      shaderHandle = 0UL;
+      programHandle = 0UL;
+      forceUpdateLineMask = 0xFF;
+      forceUpdateLineCnt = 0;
+      forceUpdateTimer.reset();
+      redrawFlag = true;
+    }
     if (!textureID)
       initializeGLDisplay();
+    if (rewindGLClearPending) {
+      // draw() owns a current GL context. Reset the whole texture, including
+      // texels outside the actively uploaded 768-pixel source width, and the
+      // current framebuffer so no future-timeline residue can survive rewind.
+      GLint savedTextureID = 0;
+      glEnable(GL_TEXTURE_2D);
+      glGetIntegerv(GL_TEXTURE_BINDING_2D, &savedTextureID);
+      glBindTexture(GL_TEXTURE_2D, GLuint(textureID));
+      if (displayParameters.displayQuality < 4) {
+        std::memset(textureSpace, 0, sizeof(uint16_t) * 1024 * 16);
+      }
+      else {
+        for (size_t n = 0; n < (1024 * 16); n++)
+          textureBuffer32[n] = 0x20000200U;
+      }
+      initializeTexture(displayParameters, textureSpace);
+      glBindTexture(GL_TEXTURE_2D, GLuint(savedTextureID));
+      glDisable(GL_TEXTURE_2D);
+      glDisable(GL_BLEND);
+      glClearColor(GLfloat(0), GLfloat(0), GLfloat(0), GLfloat(1));
+      glClear(GL_COLOR_BUFFER_BIT);
+      rewindGLClearPending = false;
+    }
     if (this->damage() & FL_DAMAGE_EXPOSE) {
       forceUpdateLineMask = 0xFF;
       forceUpdateLineCnt = 0;
@@ -1235,6 +1329,34 @@ namespace Ep128Emu {
         displayFrameRate = 1.0 / ((0.97 / displayFrameRate) + (0.03 * t));
       }
     }
+  }
+
+  void OpenGLDisplay::resetRewindOutputBuffers()
+  {
+    FLTKDisplay_::resetRewindOutputBuffers();
+
+    // Keep the last complete ring-buffered frame visible while the rewind
+    // renderer constructs its replacement. Clearing the ring here makes
+    // resampled output display empty frames between every rewind step.
+    rewindRingResetPending = true;
+    // The previous timeline may still exist in the OpenGL texture/front or
+    // back buffer even after all queued line messages are discarded. Clear
+    // those GL-owned surfaces on the next real draw, immediately before the
+    // complete replacement rewind frame is rendered. Doing this lazily keeps
+    // the GL context ownership correct and avoids a visible intermediate
+    // black frame.
+    rewindGLClearPending = true;
+
+    for (size_t n = 0; n < 289; n++)
+      linesChanged[n] = true;
+    forceUpdateLineCnt = 0;
+    forceUpdateLineMask = 0xFF;
+    redrawFlag = false;
+    prvFrameWasOdd = false;
+    lastLineNum = -2;
+    noInputTimer.reset();
+    displayFrameRateTimer.reset();
+    inputFrameRateTimer.reset();
   }
 
   bool OpenGLDisplay::checkEvents()
@@ -1315,6 +1437,27 @@ namespace Ep128Emu {
         noInputTimer.reset();
         if (screenshotCallbackFlag)
           checkScreenshotCallback();
+        if (rewindRingResetPending) {
+          if (videoResampleEnabled) {
+            // The replacement rewind frame is now complete. Replace the
+            // preserved future-timeline ring atomically on the GUI thread and
+            // seed every slot with the same frame, so resampling cannot blend
+            // old/future frames into the newly restored image.
+            for (size_t n = 0; n < 4; n++) {
+              for (size_t y = 0; y < 578; y++) {
+                if (frameRingBuffer[n][y]) {
+                  deleteMessage(frameRingBuffer[n][y]);
+                  frameRingBuffer[n][y] = (Message_LineData *) 0;
+                }
+              }
+            }
+            ringBufferReadPos = 0.0;
+            ringBufferWritePos = 0;
+            for (size_t n = 0; n < 4; n++)
+              copyFrameToRingBuffer();
+          }
+          rewindRingResetPending = false;
+        }
         if (videoResampleEnabled) {
           double  t = inputFrameRateTimer.getRealTime();
           inputFrameRateTimer.reset();
@@ -1328,9 +1471,19 @@ namespace Ep128Emu {
         }
         break;
       }
+      else if (m->msgType == Message::MsgType_RewindReset) {
+        deleteMessage(m);
+        resetRewindOutputBuffers();
+        continue;
+      }
       else if (m->msgType == Message::MsgType_SetParameters) {
         Message_SetParameters *msg;
         msg = static_cast<Message_SetParameters *>(m);
+        // checkEvents() is called outside Fl_Gl_Window::draw(), so FLTK does
+        // not guarantee that this window's OpenGL context is current here.
+        // Native macOS dialogs can change the current context; make it
+        // explicit before touching any GL object/state.
+        this->make_current();
         if (displayParameters.displayQuality != msg->dp.displayQuality ||
             displayParameters.bufferingMode != msg->dp.bufferingMode) {
           Fl::remove_idle(&fltkIdleCallback, (void *) this);
@@ -1352,6 +1505,8 @@ namespace Ep128Emu {
               glDeleteTextures(1, &oldTextureID);
             this->mode(FL_RGB
                        | (msg->dp.bufferingMode != 0 ? FL_DOUBLE : FL_SINGLE));
+            // mode() may recreate/invalidate the native GL context.
+            this->make_current();
             if (oldTextureID) {
               oldTextureID = 0U;
               glGenTextures(1, &oldTextureID);

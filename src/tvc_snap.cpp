@@ -123,6 +123,38 @@ namespace TVC64 {
 
   // --------------------------------------------------------------------------
 
+  bool TVC64VM::getIsRewindRestoreSupported() const
+  {
+    return true;
+  }
+
+  bool TVC64VM::getRewindRuntimeState(
+      Ep128Emu::VirtualMachine::RewindRuntimeState& state) const
+  {
+    state.cyclePhaseLow = crtcCyclesRemainingL;
+    state.cyclePhaseHigh = crtcCyclesRemainingH;
+    videoRenderer.getRewindState(state.machineData);
+    state.valid = true;
+    return true;
+  }
+
+  bool TVC64VM::restoreRewindRuntimeState(
+      const Ep128Emu::VirtualMachine::RewindRuntimeState& state)
+  {
+    if (!state.valid)
+      return false;
+    crtcCyclesRemainingL = state.cyclePhaseLow;
+    crtcCyclesRemainingH = state.cyclePhaseHigh;
+    return videoRenderer.restoreRewindState(state.machineData);
+  }
+
+  void TVC64VM::setRewindRestoreMode(bool enabled)
+  {
+    rewindRestoreMode = enabled;
+    if (enabled)
+      snapshotLoadFlag = false;
+  }
+
   void TVC64VM::loadState(Ep128Emu::File::Buffer& buf)
   {
     buf.setPosition(0);
@@ -132,11 +164,17 @@ namespace TVC64 {
       buf.setPosition(buf.getDataSize());
       throw Ep128Emu::Exception("incompatible TVC snapshot version");
     }
-    stopDemo();
-    snapshotLoadFlag = true;
-    // reset floppy and SD card emulation, as the state of these is not saved
-    resetFloppyDrives(true);
-    z80.closeFile();
+    if (!rewindRestoreMode) {
+      stopDemo();
+      snapshotLoadFlag = true;
+      // Normal snapshot files do not save complete external floppy/file state.
+      resetFloppyDrives(true);
+      z80.closeFile();
+    }
+    else {
+      // Rewind stays on the same live timeline: preserve external I/O state.
+      snapshotLoadFlag = false;
+    }
     try {
       z80.triggerInterrupt();
       videoRenderer.setVideoMemory(memory.getVideoMemory());

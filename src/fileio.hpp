@@ -56,6 +56,10 @@ namespace Ep128Emu {
       void writeString(const std::string& n);
       void writeData(const unsigned char *buf_, size_t nBytes);
       void setPosition(size_t pos);
+      // Reusable snapshot scratch: preserve capacity, discard previous data.
+      void resetForReuse();
+      // Capacity reservation does not change the logical data length.
+      void reserve(size_t requiredCapacity);
       void clear();
       inline size_t getPosition() const
       {
@@ -94,6 +98,7 @@ namespace Ep128Emu {
       EP128EMU_CHUNKTYPE_PLUS4_PRG =      0x45508010,
       EP128EMU_CHUNKTYPE_SID_STATE =      0x45508011,
       EP128EMU_CHUNKTYPE_SDEXT_STATE =    0x45508018,
+      EP128EMU_CHUNKTYPE_MACHINE_TYPE =   0x45508019,
       EP128EMU_CHUNKTYPE_ZXMEM_STATE =    0x45508020,
       EP128EMU_CHUNKTYPE_ZXIO_STATE =     0x45508021,
       EP128EMU_CHUNKTYPE_ZXAY3_STATE =    0x45508022,
@@ -134,12 +139,20 @@ namespace Ep128Emu {
     void loadCompressedFile(std::FILE *f);
    public:
     void addChunk(ChunkType type, const Buffer& buf_);
+    // Reuse the large snapshot output allocation on successive frames.
+    // Never call while retaining a pointer into this File's buffer.
+    void resetForReuse();
+    void addMachineTypeMetadata(int machineType);
+    int getMachineType() const;
+    static const char *getMachineTypeName(int machineType);
+    bool hasChunkType(ChunkType type) const;
     void processAllChunks();
     void writeFile(const char *fileName, bool useHomeDirectory = false,
                    bool enableCompression = false);
     void registerChunkType(ChunkTypeHandler *);
     File();
     File(const char *fileName, bool useHomeDirectory = false);
+    File(const unsigned char *buf_, size_t nBytes);
     ~File();
     inline size_t getBufferDataSize() const
     {

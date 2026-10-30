@@ -1,10 +1,11 @@
 # vim: syntax=python
 
 from __future__ import print_function
-import sys, os
+import sys, os, platform, subprocess
 
 win64CrossCompile = int(ARGUMENTS.get('win64', 0))
 mingwCrossCompile = win64CrossCompile or int(ARGUMENTS.get('win32', 0))
+hostMacBuild = (sys.platform[:6] == 'darwin' and not mingwCrossCompile)
 linux32CrossCompile = int(ARGUMENTS.get('linux32', 0))
 # on Linux, statically linked SDL version >= 1.2.10 that was not built
 # without video support (--disable-video) breaks FLTK
@@ -40,7 +41,7 @@ if enableDebug and not buildRelease:
     compilerFlags = ' -Wall -W -pedantic ' + compilerFlags
 else:
     compilerFlags = ' -Wall -O3 ' + compilerFlags
-    if (os.uname()[4][:5] == 'armv7'):
+    if (platform.machine().lower().startswith('armv7')):
         compilerFlags = compilerFlags + ' -mtune=generic-armv7-a '
     else:
         compilerFlags = compilerFlags + ' -mtune=generic '
@@ -53,8 +54,12 @@ else:
 #             linux_flags, mingw_flags, c_header, cxx_header, optional ]
 
 fltkLibsLinux = '-lfltk -lfltk_images -lfltk_jpeg -lfltk_png'
-fltkLibsMinGW = fltkLibsLinux + ' -lz -lcomdlg32 -lcomctl32 -lole32'
-fltkLibsMinGW = fltkLibsMinGW + ' -luuid -lws2_32 -lwinmm -lgdi32'
+fltkLibsMinGW = fltkLibsLinux.replace(' -lfltk_jpeg', '').replace(' -lfltk_png', '') + ' -lz -lcomdlg32 -lcomctl32 -lole32'
+fltkLibsMinGW = fltkLibsMinGW + ' -luuid -lws2_32 -lwinmm -lgdi32 -ladvapi32'
+if mingwCrossCompile and not win64CrossCompile:
+    # Win7/MinGW32 FLTK 1.4.5 pulls these native 32-bit import libraries.
+    # Preserve the accepted UCRT64 Windows x64 and macOS linker paths.
+    fltkLibsMinGW += ' -lgdiplus -lwinspool'
 fltkLibsLinux = fltkLibsLinux + ' -lfltk_z -lXcursor -lXinerama -lXrender'
 fltkLibsLinux = fltkLibsLinux + ' -lXext -lXft -lXfixes -lX11 -lfontconfig -ldl'
 
@@ -65,7 +70,8 @@ packageConfigs = {
     'FLTK-GL' : [
         'fltk-config --use-gl --use-images --cflags --cxxflags --ldflags', [''],
         '-lfltk_gl ' + fltkLibsLinux + ' -lGL',
-        '-lfltk_gl ' + fltkLibsMinGW + ' -lopengl32',
+        '-lfltk_gl ' + fltkLibsMinGW + ' -lopengl32'
+        + (' -lglu32' if mingwCrossCompile and not win64CrossCompile else ''),
         '', 'FL/Fl_Gl_Window.H', 1 ],
     'sndfile' : [
         'pkg-config --silence-errors --cflags --libs',
@@ -91,6 +97,75 @@ packageConfigs = {
         'curl/curl.h', '', 1]
 }
 
+
+# Mac-only toolchain contract. Never silently fall back to /usr/local FLTK 1.3
+# or Homebrew when building in a new Git worktree or resuming SCons directly.
+# All failures must occur before SCons compiles or links any source files.
+macPinnedFLTKPrefix = None
+macPinnedFLTKConfig = None
+macPinnedFLTKFluid = None
+if hostMacBuild:
+    macPinnedFLTKPrefix = os.path.realpath(os.path.expanduser(
+        os.environ.get('EP128EMU_FLTK_PREFIX', '~/Library/ep128emu/fltk-1.4.5')))
+    macPinnedFLTKConfig = os.path.join(macPinnedFLTKPrefix, 'bin', 'fltk-config')
+    macPinnedFLTKFluid = os.path.join(macPinnedFLTKPrefix, 'bin', 'fluid')
+    for var, required in (('EP128EMU_FLTK_PREFIX', macPinnedFLTKPrefix),
+                          ('EP128EMU_FLTK_CONFIG', macPinnedFLTKConfig),
+                          ('EP128EMU_FLUID', macPinnedFLTKFluid)):
+        supplied = os.environ.get(var)
+        if supplied and os.path.realpath(os.path.expanduser(supplied)) != required:
+            Exit('FLTK_PIN_MISMATCH: %s=%s; required %s' %
+                 (var, supplied, required))
+    for fileName in (macPinnedFLTKConfig, macPinnedFLTKFluid,
+                     os.path.join(macPinnedFLTKPrefix, 'include', 'FL', 'Fl.H')):
+        if not os.path.isfile(fileName):
+            Exit('FLTK_PIN_MISSING: %s' % fileName)
+    try:
+        fltkVersion = subprocess.check_output(
+            [macPinnedFLTKConfig, '--version'],
+            stderr=subprocess.STDOUT).decode('utf-8').strip()
+        fltkInstalledPrefix = subprocess.check_output(
+            [macPinnedFLTKConfig, '--prefix'],
+            stderr=subprocess.STDOUT).decode('utf-8').strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        Exit('FLTK_PIN_EXEC_FAILURE: %s' % exc)
+    if fltkVersion != '1.4.5' or os.path.realpath(fltkInstalledPrefix) != macPinnedFLTKPrefix:
+        Exit('FLTK_PIN_VERSION_OR_PREFIX_MISMATCH: version=%s prefix=%s' %
+             (fltkVersion, fltkInstalledPrefix))
+    macFLTKWrapper = os.path.abspath('tools/fltk-config')
+    if not os.path.isfile(macFLTKWrapper) or not os.access(macFLTKWrapper, os.X_OK):
+        Exit('FLTK_PIN_WRAPPER_MISSING: %s' % macFLTKWrapper)
+    packageConfigs['FLTK'][0] = (
+        macFLTKWrapper + ' --use-images --cflags --cxxflags --ldflags')
+    packageConfigs['FLTK-GL'][0] = (
+        macFLTKWrapper + ' --use-gl --use-images --cflags --cxxflags --ldflags')
+    # Standalone preflight: `scons -Q fltkcheck=1` checks the actual wrapper
+    # flags and fluid executable without triggering Configure() or compilation.
+    # Run these checks on normal builds as well, so a broken wrapper fails early.
+    fltkTestEnv = dict(os.environ)
+    fltkTestEnv['EP128EMU_FLTK_PREFIX'] = macPinnedFLTKPrefix
+    fltkTestEnv['EP128EMU_FLTK_CONFIG'] = macPinnedFLTKConfig
+    fltkTestEnv['PATH'] = os.pathsep.join((os.path.abspath('tools'),
+                                           os.path.join(macPinnedFLTKPrefix, 'bin'),
+                                           os.environ.get('PATH', '')))
+    try:
+        fltkFlags = subprocess.check_output(
+            [macFLTKWrapper, '--use-images', '--cflags', '--cxxflags', '--ldflags'],
+            env=fltkTestEnv, stderr=subprocess.STDOUT).decode('utf-8')
+        fluidVersion = subprocess.check_output(
+            [macPinnedFLTKFluid, '--version'],
+            env=fltkTestEnv, stderr=subprocess.STDOUT).decode('utf-8').strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        Exit('FLTK_PIN_TOOL_FAILURE: %s' % exc)
+    if ('-I' + os.path.join(macPinnedFLTKPrefix, 'include')) not in fltkFlags or \
+       ('-L' + os.path.join(macPinnedFLTKPrefix, 'lib')) not in fltkFlags or \
+       fluidVersion != 'fluid v1.4.5':
+        Exit('FLTK_PIN_TOOL_MISMATCH: invalid wrapper include/lib or fluid version')
+    print('FLTK_PIN_1_4_5_PREFLIGHT_PASS: ' + macPinnedFLTKPrefix)
+    if int(ARGUMENTS.get('fltkcheck', 0)):
+        print('FLTK_PIN_STANDALONE_CHECK_PASS')
+        Exit(0)
+
 def configurePackage(env, pkgName):
     global packageConfigs, disablePkgConfig
     global linux32CrossCompile, mingwCrossCompile, win64CrossCompile
@@ -105,14 +180,15 @@ def configurePackage(env, pkgName):
                 print('Checking for package ' + s + '...', end = ' ')
                 s = ' ' + s
             try:
+                # SCons 4.x ParseConfig() mutates the environment in place and
+                # returns None on success; older ep128emu expected a truthy value.
                 env.ParseConfig(packageConfigs[pkgName][0] + s)
                 print('yes')
                 if not s:
                     env['CCFLAGS'] = savedCFlags
                     env['CXXFLAGS'] = savedCXXFlags
-                    if 'CPPDEFINES' in env:
-                        if ['_FORTIFY_SOURCE', '2'] in env['CPPDEFINES']:
-                            env['CPPDEFINES'].remove(['_FORTIFY_SOURCE', '2'])
+                    if ['_FORTIFY_SOURCE', '2'] in env['CPPDEFINES']:
+                        env['CPPDEFINES'].remove(['_FORTIFY_SOURCE', '2'])
                 return 1
             except:
                 print('no')
@@ -176,8 +252,23 @@ def copyEnvironment(env):
         return env.Copy()
     return env.Clone()
 
-ep128emuLibEnvironment = Environment(ENV = { 'PATH' : os.environ['PATH'],
-                                             'HOME' : os.environ['HOME'] })
+sconsEnv = { 'PATH' : os.environ['PATH'],
+             'HOME' : os.environ['HOME'] }
+if hostMacBuild:
+    # Force the wrapper and pinned fluid ahead of system-wide binaries,
+    # including for SCons subprocesses, even when the caller's PATH is stale.
+    sconsEnv['PATH'] = os.pathsep.join((os.path.abspath('tools'),
+                                      os.path.join(macPinnedFLTKPrefix, 'bin'),
+                                      os.environ['PATH']))
+    sconsEnv['EP128EMU_FLTK_PREFIX'] = macPinnedFLTKPrefix
+    sconsEnv['EP128EMU_FLTK_CONFIG'] = macPinnedFLTKConfig
+    sconsEnv['EP128EMU_FLUID'] = macPinnedFLTKFluid
+else:
+    for k in ('EP128EMU_FLTK_PREFIX', 'EP128EMU_FLTK_CONFIG'):
+        if k in os.environ:
+            sconsEnv[k] = os.environ[k]
+DefaultEnvironment(ENV = sconsEnv)
+ep128emuLibEnvironment = Environment(ENV = sconsEnv)
 if linux32CrossCompile:
     compilerFlags = ' -m32 ' + compilerFlags
 ep128emuLibEnvironment.Append(CCFLAGS = Split(compilerFlags))
@@ -186,8 +277,16 @@ if userFlags:
     ep128emuLibEnvironment.MergeFlags(userFlags)
 if not mingwCrossCompile:
     ep128emuLibEnvironment.Append(CPPPATH = ['/usr/local/include'])
-if sys.platform[:6] == 'darwin':
+if hostMacBuild:
     ep128emuLibEnvironment.Append(CPPPATH = ['/usr/X11R6/include'])
+    # Allow a pinned local FLTK prefix for reproducible trial/release builds.
+    # Keep Homebrew includes available for the other macOS dependencies.
+    fltkPrefix = macPinnedFLTKPrefix
+    ep128emuLibEnvironment.Prepend(CPPPATH = [fltkPrefix + '/include',
+                                              '/opt/homebrew/include'])
+    # FLTK 1.4 dylibs use @rpath for their internal dependencies.
+    ep128emuLibEnvironment.Append(
+        LINKFLAGS = ['-Wl,-rpath,' + fltkPrefix + '/lib'])
 if not linux32CrossCompile:
     linkFlags = ' -L. '
 else:
@@ -195,7 +294,9 @@ else:
 ep128emuLibEnvironment.Append(LINKFLAGS = Split(linkFlags))
 if mingwCrossCompile:
     wordSize = ['32', '64'][int(bool(win64CrossCompile))]
-    mingwPrefix = 'C:/mingw' + wordSize
+    mingwPrefix = os.environ.get('EP128EMU_MINGW_PREFIX',
+                                 (sys.prefix if sys.platform[:3] == 'win' and os.environ.get('MSYSTEM')
+                                  else 'C:/mingw' + wordSize))
     ep128emuLibEnvironment.Prepend(CCFLAGS = ['-m' + wordSize])
     ep128emuLibEnvironment.Prepend(LINKFLAGS = ['-m' + wordSize])
     ep128emuLibEnvironment.Append(CPPPATH = [mingwPrefix + '/include'])
@@ -212,7 +313,7 @@ if mingwCrossCompile:
     ep128emuLibEnvironment['LINK'] = toolNamePrefix + 'g++'
     ep128emuLibEnvironment['RANLIB'] = toolNamePrefix + 'ranlib'
     ep128emuLibEnvironment['PROGSUFFIX'] = '.exe'
-    packageConfigs['Lua'][3] = '-llua' + ['53', '51'][int(bool(useLuaJIT))]
+    packageConfigs['Lua'][3] = '-llua5.3' if not useLuaJIT else '-llua51'
     ep128emuLibEnvironment.Append(
         CPPPATH = [mingwPrefix
                    + '/include/lua' + ['5.3', '5.1'][int(bool(useLuaJIT))]])
@@ -239,6 +340,9 @@ configurePackage(ep128emuGUIEnvironment, 'FLTK')
 makecfgEnvironment = copyEnvironment(ep128emuGUIEnvironment)
 configurePackage(ep128emuGUIEnvironment, 'sndfile')
 tapeeditEnvironment = copyEnvironment(ep128emuGUIEnvironment)
+if hostMacBuild:
+    ep128emuGUIEnvironment.Append(LIBS = ['mp3lame'])
+    ep128emuGUIEnvironment.Append(LINKFLAGS = ['-framework', 'IOKit'])
 haveLua = 0
 haveSDL = 0
 if not disableLua:
@@ -251,12 +355,29 @@ ep128emuGLGUIEnvironment = copyEnvironment(ep128emuGUIEnvironment)
 disableOpenGL = 1
 if configurePackage(ep128emuGLGUIEnvironment, 'FLTK-GL'):
     configure = ep128emuGLGUIEnvironment.Configure()
-    if configure.CheckCHeader('GL/gl.h'):
+    if hostMacBuild:
+        haveOpenGL = configure.CheckCHeader('OpenGL/gl.h')
+    else:
+        haveOpenGL = configure.CheckCHeader('GL/gl.h')
+    if haveOpenGL:
         disableOpenGL = 0
         if enableGLShaders:
-            if not configure.CheckType('PFNGLCOMPILESHADERPROC',
-                                       '#include <GL/gl.h>\n'
-                                       + '#include <GL/glext.h>'):
+            if hostMacBuild:
+                shaderTest = '''
+                    #include <OpenGL/gl.h>
+                    int main()
+                    {
+                      GLuint s = glCreateShader(GL_FRAGMENT_SHADER);
+                      glCompileShader(s);
+                      return 0;
+                    }
+                '''
+                if not configure.TryLink(shaderTest, '.cpp'):
+                    print('WARNING: disabling GL shader support')
+                    enableGLShaders = 0
+            elif not configure.CheckType('PFNGLCOMPILESHADERPROC',
+                                         '#include <GL/gl.h>\n'
+                                         + '#include <GL/glext.h>'):
                 print('WARNING: disabling GL shader support')
                 enableGLShaders = 0
     configure.Finish()
@@ -268,6 +389,20 @@ if disableOpenGL:
     enableGLShaders = 0
     ep128emuGLGUIEnvironment = copyEnvironment(ep128emuGUIEnvironment)
     ep128emuGLGUIEnvironment.Append(CCFLAGS = ['-DDISABLE_OPENGL_DISPLAY'])
+
+# SCons 4.x ParseConfig mistakes FLTK 1.4.5's `-weak_framework
+# UniformTypeIdentifiers` as a source/lib named UniformTypeIdentifiers.
+# Keep its intended weak link flag, not a missing file dependency.
+if sys.platform[:6] == 'darwin':
+    for fwEnv in (ep128emuGUIEnvironment, ep128emuGLGUIEnvironment,
+                  makecfgEnvironment, tapeeditEnvironment):
+        falseLibs = [x for x in fwEnv['LIBS']
+                     if str(x) == 'UniformTypeIdentifiers']
+        if falseLibs:
+            fwEnv['LIBS'] = [x for x in fwEnv['LIBS']
+                             if str(x) != 'UniformTypeIdentifiers']
+            fwEnv.Append(LINKFLAGS = [
+                '-Wl,-weak_framework,UniformTypeIdentifiers'])
 
 ep128emuLibEnvironment['CPPPATH'] = ep128emuGLGUIEnvironment['CPPPATH']
 
@@ -301,21 +436,13 @@ if not oldSConsVersion:
                  ep128emuGUIEnvironment, ep128emuGLGUIEnvironment)
 
 configure = ep128emuLibEnvironment.Configure()
-if configure.CheckCHeader('stdint.h'):
-    ep128emuLibEnvironment.Append(CCFLAGS = ['-DHAVE_STDINT_H'])
-if sys.platform[:5] == 'linux' and not mingwCrossCompile:
-    if configure.CheckCHeader('linux/fd.h'):
-        ep128emuLibEnvironment.Append(CCFLAGS = ['-DHAVE_LINUX_FD_H'])
-configure.Finish()
-
-configureGUI = ep128emuGUIEnvironment.Configure()
-if configureGUI.CheckType('PaStreamCallbackTimeInfo', '#include <portaudio.h>'):
+if configure.CheckType('PaStreamCallbackTimeInfo', '#include <portaudio.h>'):
     havePortAudioV19 = 1
 else:
     havePortAudioV19 = 0
     print('WARNING: using old v18 PortAudio interface')
 fltkVersion13 = 0
-if configureGUI.CheckCXXHeader('FL/Fl_Cairo.H'):
+if configure.CheckCXXHeader('FL/Fl_Cairo.H'):
     fltkVersion13 = 1
 else:
     ep128emuLibEnvironment.Append(CPPPATH = ['./Fl_Native_File_Chooser'])
@@ -323,14 +450,19 @@ else:
     ep128emuGLGUIEnvironment.Append(CPPPATH = ['./Fl_Native_File_Chooser'])
     makecfgEnvironment.Append(CPPPATH = ['./Fl_Native_File_Chooser'])
     tapeeditEnvironment.Append(CPPPATH = ['./Fl_Native_File_Chooser'])
+if configure.CheckCHeader('stdint.h'):
+    ep128emuLibEnvironment.Append(CCFLAGS = ['-DHAVE_STDINT_H'])
+if sys.platform[:5] == 'linux' and not mingwCrossCompile:
+    if configure.CheckCHeader('linux/fd.h'):
+        ep128emuLibEnvironment.Append(CCFLAGS = ['-DHAVE_LINUX_FD_H'])
 
 oldLuaVersion = 0
 if haveLua:
-    if not configureGUI.CheckType('lua_Integer',
+    if not configure.CheckType('lua_Integer',
                                '#include <lua.h>\n#include <lauxlib.h>'):
         oldLuaVersion = 1
         print('WARNING: using old Lua 5.0.x API')
-configureGUI.Finish()
+configure.Finish()
 
 if not havePortAudioV19:
     ep128emuLibEnvironment.Append(CCFLAGS = ['-DUSING_OLD_PORTAUDIO_API'])
@@ -356,14 +488,17 @@ ep128emuGLGUIEnvironment.MergeFlags(ep128emuLibEnvironment['CCFLAGS'])
 makecfgEnvironment.MergeFlags(ep128emuLibEnvironment['CCFLAGS'])
 tapeeditEnvironment.MergeFlags(ep128emuLibEnvironment['CCFLAGS'])
 
-def fluidCompile(env, flNames):
+def fluidCompile(flNames):
     cppNames = []
+    # The FLUID emitter uses the global SCons Command builder, not the
+    # per-target ENV: never rely on PATH to find the pinned Mac tool.
+    fluidExecutable = ('"' + macPinnedFLTKFluid + '"') if hostMacBuild else 'fluid'
     for flName in flNames:
         if flName.endswith('.fl'):
             cppName = flName[:-3] + '_fl.cpp'
             hppName = flName[:-3] + '_fl.hpp'
-            env.Command([cppName, hppName], flName,
-                    'fluid -c -o %s -h %s $SOURCES' % (cppName, hppName))
+            Command([cppName, hppName], flName,
+                    '%s -c -o %s -h %s $SOURCES' % (fluidExecutable, cppName, hppName))
             cppNames += [cppName]
     return cppNames
 
@@ -378,6 +513,7 @@ ep128emuLibSources = Split('''
     src/dotconf.c
     src/emucfg.cpp
     src/ep_fdd.cpp
+    src/sdd_journal.cpp
     src/fileio.cpp
     src/fldisp.cpp
     src/gldisp.cpp
@@ -407,7 +543,7 @@ if enableMIDI:
                                'portmidi/pm_linux/pmlinuxalsa.c',
                                'portmidi/pm_linux/pmlinux.c',
                                'portmidi/porttime/ptlinux.c']
-    elif sys.platform[:6] == 'darwin':
+    elif hostMacBuild:
         ep128emuLibSources += ['portmidi/pm_mac/finddefault.c',
                                'portmidi/pm_mac/pmmac.c',
                                'portmidi/pm_mac/pmmacosxcm.c',
@@ -449,6 +585,8 @@ zx128LibEnvironment.Append(CPPPATH = ['./z80'])
 zx128Lib = zx128LibEnvironment.StaticLibrary('zx128', Split('''
     src/ay3_8912.cpp
     src/zx128vm.cpp
+    src/speccydos.cpp
+    src/betadisk.cpp
     src/zxioport.cpp
     src/zxmemory.cpp
     src/ula.cpp
@@ -512,8 +650,15 @@ if enableReSID:
     ep128emuEnvironment.Prepend(LIBS = [residLib])
 ep128emuEnvironment.Prepend(LIBS = [ep128Lib, zx128Lib, cpc464Lib, tvc64Lib])
 
-ep128emuSources = ['gui/gui.cpp']
-ep128emuSources += fluidCompile(ep128emuGUIEnvironment, ['gui/gui.fl', 'gui/disk_cfg.fl',
+ep128emuSources = ['gui/gui.cpp', 'gui/shortcut_cfg.cpp', 'gui/archive_drop.cpp']
+if mingwCrossCompile:
+    ep128emuSources += ['gui/win_archive_extract.cpp']
+    ep128emuSources += ['gui/win_native_drop.cpp']
+    ep128emuSources += ['gui/win_rar_fallback.cpp']
+    ep128emuEnvironment.Append(LIBS = ['archive'])
+if hostMacBuild:
+    ep128emuSources += ['gui/macos_activity.mm', 'gui/macos_about.mm']
+ep128emuSources += fluidCompile(['gui/gui.fl', 'gui/disk_cfg.fl',
                                  'gui/disp_cfg.fl', 'gui/kbd_cfg.fl',
                                  'gui/snd_cfg.fl', 'gui/vm_cfg.fl',
                                  'gui/debug.fl', 'gui/about.fl'])
@@ -524,34 +669,33 @@ if mingwCrossCompile:
         ['resource/ep128emu.rc', 'resource/cpc464emu.ico',
          'resource/ep128emu.ico', 'resource/tvc64emu.ico',
          'resource/zx128emu.ico'],
-        toolNamePrefix + 'windres -v --use-temp-file '
-        + '--preprocessor="gcc.exe -E -xc -DRC_INVOKED" '
-        + '-o $TARGET resource/ep128emu.rc')
+        toolNamePrefix + 'windres -v -o $TARGET resource/ep128emu.rc')
     ep128emuSources += [ep128emuResourceObject]
 ep128emu = ep128emuEnvironment.Program('ep128emu', ep128emuSources)
 
-if sys.platform[:6] == 'darwin':
+if hostMacBuild:
     Command('ep128emu.app/Contents/MacOS/ep128emu', 'ep128emu',
             'mkdir -p ep128emu.app/Contents/MacOS ; cp -pf $SOURCES $TARGET')
+    Command('ep128emu.app/Contents/Resources/EP_rele.wav',
+            'resource/EP_rele.wav',
+            'mkdir -p ep128emu.app/Contents/Resources ; cp -pf $SOURCES $TARGET')
 
 # -----------------------------------------------------------------------------
 
 tapeeditEnvironment.Append(CPPPATH = ['./tapeutil'])
 tapeeditEnvironment.Prepend(LIBS = ['ep128emu'])
-tapeeditSources = fluidCompile(ep128emuGUIEnvironment, ['tapeutil/tapeedit.fl'])
+tapeeditSources = fluidCompile(['tapeutil/tapeedit.fl'])
 tapeeditSources += ['tapeutil/tapeio.cpp']
 if mingwCrossCompile:
     tapeeditResourceObject = tapeeditEnvironment.Command(
         'resource/te_resrc.o',
         ['resource/tapeedit.rc', 'resource/tapeedit.ico'],
-        toolNamePrefix + 'windres -v --use-temp-file '
-        + '--preprocessor="gcc.exe -E -xc -DRC_INVOKED" '
-        + '-o $TARGET resource/tapeedit.rc')
+        toolNamePrefix + 'windres -v -o $TARGET resource/tapeedit.rc')
     tapeeditSources += [tapeeditResourceObject]
 tapeedit = tapeeditEnvironment.Program('tapeedit', tapeeditSources)
 Depends(tapeedit, ep128emuLib)
 
-if sys.platform[:6] == 'darwin':
+if hostMacBuild:
     Command('ep128emu.app/Contents/MacOS/tapeedit', 'tapeedit',
             'mkdir -p ep128emu.app/Contents/MacOS ; cp -pf $SOURCES $TARGET')
 
@@ -616,7 +760,7 @@ if buildUtilities:
     if not disableOpenGL:
         epimgconvSources += ['util/epimgconv/src/imgconvgui.cpp',
                              'util/epimgconv/src/img_disp.cpp',
-                             fluidCompile(ep128emuGUIEnvironment, ['util/epimgconv/src/epimgconv.fl'])]
+                             fluidCompile(['util/epimgconv/src/epimgconv.fl'])]
     elif mingwCrossCompile:
         epimgconvEnvironment['LINKFLAGS'].remove('-mwindows')
     if mingwCrossCompile and not disableOpenGL:
@@ -644,13 +788,13 @@ if not mingwCrossCompile:
                                               envName : os.environ[envName] })
 
 makecfg = makecfgEnvironment.Program(programNamePrefix + 'makecfg',
-    ['installer/makecfg.cpp'] + fluidCompile(ep128emuGUIEnvironment, ['installer/mkcfg.fl']))
+    ['installer/makecfg.cpp'] + fluidCompile(['installer/mkcfg.fl']))
 Depends(makecfg, ep128emuLib)
 
-if sys.platform[:6] == 'darwin':
+if hostMacBuild:
     Command('ep128emu.app/Contents/MacOS/' + programNamePrefix + 'makecfg',
             programNamePrefix + 'makecfg',
-            'mkdir -p ep128emu.app/Contents/MacOS ; cp -pf $SOURCES $TARGET; cp install-osx.sh ep128emu.app/Contents/MacOS; chmod 0755 ep128emu.app/Contents/MacOS/install-osx.sh')
+            'mkdir -p ep128emu.app/Contents/MacOS ; cp -pf $SOURCES $TARGET')
 
 # -----------------------------------------------------------------------------
 

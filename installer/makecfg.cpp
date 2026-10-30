@@ -1351,6 +1351,7 @@ int main(int argc, char **argv)
   Ep128Emu::setGUIColorScheme(1);
 #endif
   bool    forceInstallFlag = false;
+  bool    presetOnlyFlag = false;
   bool    defaultCfgInstall = false;
   std::string installDirectory = "";
   {
@@ -1361,6 +1362,13 @@ int main(int argc, char **argv)
           break;
         if (argv[i][1] == 'f' && argv[i][2] == '\0') {
           forceInstallFlag = true;
+          continue;
+        }
+        if (argv[i][1] == 'p' && argv[i][2] == '\0') {
+          // Portable package: write only presets to the requested directory,
+          // never replace per-user gui_cfg.dat / machine .dat files.
+          forceInstallFlag = true;
+          presetOnlyFlag = true;
           continue;
         }
         if (argv[i][1] == 'c' && argv[i][2] == '\0') {
@@ -1461,7 +1469,7 @@ int main(int argc, char **argv)
   }
   else {
     gui->enablePresetCfgInstall = true;
-    gui->enableCfgInstall = true;
+    gui->enableCfgInstall = !presetOnlyFlag;
   }
 #ifndef WIN32
   while (installDirectory[installDirectory.length() - 1] == '/' &&

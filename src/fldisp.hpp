@@ -36,7 +36,8 @@ namespace Ep128Emu {
         MsgType_None = 0,
         MsgType_LineData = 1,
         MsgType_FrameDone = 2,
-        MsgType_SetParameters = 3
+        MsgType_SetParameters = 3,
+        MsgType_RewindReset = 4
       };
       Message   *nxt;
       intptr_t  msgType;
@@ -98,6 +99,13 @@ namespace Ep128Emu {
       {
       }
     };
+    class Message_RewindReset : public Message {
+     public:
+      Message_RewindReset()
+        : Message(MsgType_RewindReset)
+      {
+      }
+    };
     class Message_SetParameters : public Message {
      public:
       DisplayParameters dp;
@@ -140,6 +148,7 @@ namespace Ep128Emu {
                            const unsigned char *inBuf, size_t nBytes);
     void frameDone();
     void checkScreenshotCallback();
+    virtual void resetRewindOutputBuffers();
     // ----------------
     Message       *messageQueue;
     Message       *lastMessage;
@@ -154,6 +163,7 @@ namespace Ep128Emu {
     bool          framesPendingFlag;
     bool          vsyncState;
     bool          oddFrame;
+    bool          rewindDiscardUntilFrameBoundary;
     volatile bool videoResampleEnabled;
     volatile bool exitFlag;
     volatile bool limitFrameRateFlag;
@@ -202,6 +212,9 @@ namespace Ep128Emu {
      * the current line (0 to 56).
      */
     virtual void vsyncStateChange(bool newState, unsigned int currentSlot_);
+    virtual bool getRewindState(RewindState& state) const;
+    virtual bool restoreRewindState(const RewindState& state,
+                                    bool resetOutput);
     /*!
      * Read and process messages sent by the child thread. Returns true if
      * redraw() needs to be called to update the display.
@@ -264,6 +277,7 @@ namespace Ep128Emu {
       }
     };
     void displayFrame();
+    virtual void resetRewindOutputBuffers();
     // ----------------
     Colormap      colormap;
     /*!

@@ -1322,6 +1322,7 @@ namespace TVC64 {
       isRecordingDemo(false),
       isPlayingDemo(false),
       snapshotLoadFlag(false),
+      rewindRestoreMode(false),
       demoTimeCnt(0UL),
       vtdosROMPage(0),
       breakPointPriorityThreshold(0),
@@ -1576,7 +1577,8 @@ namespace TVC64 {
       bool yuvFormat_,
       void (*errorCallback_)(void *userData, const char *msg),
       void (*fileNameCallback_)(void *userData, std::string& fileName),
-      void *userData_)
+      void *userData_,
+      bool preserveAllVideoFrames_)
   {
     if (!videoCapture) {
       if (yuvFormat_) {
@@ -1585,7 +1587,7 @@ namespace TVC64 {
       }
       else {
         videoCapture = new Ep128Emu::VideoCapture_RLE8(
-                               &TVCVideo::convertPixelToRGB, frameRate_);
+                               &TVCVideo::convertPixelToRGB, frameRate_, preserveAllVideoFrames_);
       }
       videoCapture->setClockFrequency(crtcFrequency);
       setCallback(&videoCaptureCallback, this, true);
@@ -1614,7 +1616,7 @@ namespace TVC64 {
 
   void TVC64VM::setDiskImageFile(int n, const std::string& fileName_,
                                  int nTracks_, int nSides_,
-                                 int nSectorsPerTrack_)
+                                 int nSectorsPerTrack_, int bytesPerSector_)
   {
 #ifndef ENABLE_SDEXT
     if (n < 0 || n > 7)
@@ -1628,7 +1630,8 @@ namespace TVC64 {
         wd177x.setFloppyDrive(&(floppyDrives[n]));
       }
       floppyDrives[n].setDiskImageFile(fileName_,
-                                       nTracks_, nSides_, nSectorsPerTrack_);
+                                       nTracks_, nSides_, nSectorsPerTrack_,
+                                       bytesPerSector_);
     }
 #ifdef ENABLE_SDEXT
     else if (n >= 8) {

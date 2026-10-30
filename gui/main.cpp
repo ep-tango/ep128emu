@@ -24,13 +24,286 @@
 #include "tvc64vm.hpp"
 #include "system.hpp"
 #include "guicolor.hpp"
+#ifdef __APPLE__
+#  include "macos_activity.hpp"
+#  include "macos_about.hpp"
+#  include <FL/Fl_Sys_Menu_Bar.H>
+#  include <mach-o/dyld.h>
+#  include <spawn.h>
+#endif
+#include <vector>
 
 #include <typeinfo>
+#include <stdexcept>
+
+#ifdef __APPLE__
+extern char **environ;
+#endif
 
 #ifdef WIN32
 #  include <windows.h>
+#  include "win_trial_paths.hpp"
 #else
 #  include <dirent.h>
+#endif
+
+#ifdef __APPLE__
+static void macOSAboutCallback(Fl_Widget *, void *)
+{
+  ep128emuShowMacOSAboutPanel();
+}
+#endif
+
+#ifdef __APPLE__
+static bool restartAsMacOSMachine(int machineType, int loadType,
+                                  const std::string& loadFileName)
+{
+  static const char *machineArgs[4] = { "-ep128", "-zx", "-cpc", "-tvc" };
+  static const char *loadArgs[4] = {
+    (const char *) 0, "-snapshot", "-cfg", "-loadfile"
+  };
+  if (machineType < 0 || machineType > 3 || loadType < 0 || loadType > 3)
+    return false;
+  if (loadType != 0 && loadFileName.empty())
+    return false;
+  uint32_t pathSize = 0;
+  (void) _NSGetExecutablePath((char *) 0, &pathSize);
+  if (pathSize < 2)
+    return false;
+  std::vector<char> executablePath(size_t(pathSize) + 1, '\0');
+  if (_NSGetExecutablePath(&(executablePath.front()), &pathSize) != 0)
+    return false;
+  char *childArgv[5];
+  childArgv[0] = &(executablePath.front());
+  childArgv[1] = const_cast<char *>(machineArgs[machineType]);
+  if (loadType != 0) {
+    childArgv[2] = const_cast<char *>(loadArgs[loadType]);
+    childArgv[3] = const_cast<char *>(loadFileName.c_str());
+    childArgv[4] = (char *) 0;
+  }
+  else {
+    childArgv[2] = (char *) 0;
+  }
+  pid_t childPID = 0;
+  return (posix_spawn(&childPID, childArgv[0], (posix_spawn_file_actions_t *) 0,
+                      (posix_spawnattr_t *) 0, childArgv, environ) == 0);
+}
+#endif
+
+#ifdef WIN32
+// Spawn the next emulated machine only after the current VM/audio/GUI has
+// been torn down. Use the current EXE, not PATH or a shell, and quote
+// Windows Unicode paths for configurations, snapshots and binary files.
+static std::wstring ep128emuWinQuoteArg(const std::wstring& arg)
+{
+  std::wstring result(L"\"");
+  size_t backslashes = 0;
+  for (size_t i = 0; i < arg.size(); i++) {
+    wchar_t c = arg[i];
+    if (c == L'\\') {
+      backslashes++;
+      continue;
+    }
+    if (c == L'"')
+      result.append(backslashes * 2 + 1, L'\\');
+    else
+      result.append(backslashes, L'\\');
+    backslashes = 0;
+    result += c;
+  }
+  result.append(backslashes * 2, L'\\');
+  result += L'"';
+  return result;
+}
+
+static std::wstring ep128emuWinPathToWide(const std::string& path)
+{
+  int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                              path.c_str(), -1, (wchar_t *) 0, 0);
+  UINT codePage = CP_UTF8;
+  if (n <= 0) {
+    // Some legacy FLTK paths may still be encoded in the system ACP.
+    codePage = CP_ACP;
+    n = MultiByteToWideChar(codePage, 0, path.c_str(), -1,
+                            (wchar_t *) 0, 0);
+  }
+  if (n <= 0)
+    return std::wstring();
+  std::vector<wchar_t> buf(size_t(n), L'\0');
+  if (!MultiByteToWideChar(codePage, 0, path.c_str(), -1, &buf[0], n))
+    return std::wstring();
+  return std::wstring(&buf[0]);
+}
+
+static bool restartAsWindowsMachine(int machineType, int loadType,
+                                    const std::string& loadFileName)
+{
+  static const wchar_t *machineArgs[4] =
+      { L"-ep128", L"-zx", L"-cpc", L"-tvc" };
+  static const wchar_t *loadArgs[4] =
+      { (const wchar_t *) 0, L"-snapshot", L"-cfg", L"-loadfile" };
+  if (machineType < 0 || machineType > 3 || loadType < 0 || loadType > 3)
+    return false;
+  if (loadType != 0 && loadFileName.empty())
+    return false;
+  std::vector<wchar_t> executablePath(32768U, L'\0');
+  DWORD n = GetModuleFileNameW((HMODULE) 0, &executablePath[0],
+                               DWORD(executablePath.size()));
+  if (n == 0 || size_t(n) >= executablePath.size())
+    return false;
+  std::wstring exe(&executablePath[0]);
+  std::wstring cmd = ep128emuWinQuoteArg(exe) + L" " +
+                     machineArgs[machineType];
+  if (loadType != 0) {
+    std::wstring filePath = ep128emuWinPathToWide(loadFileName);
+    if (filePath.empty())
+      return false;
+    cmd += L" ";
+    cmd += loadArgs[loadType];
+    cmd += L" ";
+    cmd += ep128emuWinQuoteArg(filePath);
+  }
+  STARTUPINFOW startup;
+  PROCESS_INFORMATION child;
+  ZeroMemory(&startup, sizeof(startup));
+  ZeroMemory(&child, sizeof(child));
+  startup.cb = sizeof(startup);
+  BOOL ok = CreateProcessW(exe.c_str(), &cmd[0],
+                           (LPSECURITY_ATTRIBUTES) 0,
+                           (LPSECURITY_ATTRIBUTES) 0,
+                           FALSE, 0, (LPVOID) 0, (LPCWSTR) 0,
+                           &startup, &child);
+  if (!ok)
+    return false;
+  // The menu command that requested the machine switch had the user's
+  // input focus. Explicitly allow its child to become foreground, even
+  // when the previous instance closes before the next GUI is shown.
+  (void) AllowSetForegroundWindow(child.dwProcessId);
+  CloseHandle(child.hThread);
+  CloseHandle(child.hProcess);
+  return true;
+}
+#endif
+
+#ifdef WIN32
+// T004: Migrate only provably missing paths from known historical trial
+// installations. Never rewrite existing user files or a custom location.
+// The original binary config is backed up before any automatic correction.
+static bool repairKnownWindowsTrialConfiguration(
+    Ep128Emu::EmulatorConfiguration& cfg,
+    int machineType, const char *configFileName,
+    bool allowMissingFactoryROMs)
+{
+  const std::string root = Ep128EmuWinTrial::programDirectory();
+  if (root.empty())
+    return false;
+
+  std::vector<std::string> romPaths(68);
+  std::vector<int> romOffsets(68);
+  bool romChanged = false;
+  for (size_t i = 0; i < 68U; i++) {
+    romPaths[i] = Ep128EmuWinTrial::relocateMissing(
+        cfg.memory.rom[i].file, root);
+    romOffsets[i] = cfg.memory.rom[i].offset;
+    if (romPaths[i] != cfg.memory.rom[i].file)
+      romChanged = true;
+  }
+  std::string memConfig =
+      Ep128EmuWinTrial::relocateMissing(cfg.memory.configFile, root);
+  std::string fileIODir = Ep128EmuWinTrial::relocateMissing(
+      cfg.fileio.workingDirectory, root, true);
+#ifdef ENABLE_SDEXT
+  std::string sdROM =
+      Ep128EmuWinTrial::relocateMissing(cfg.sdext.romFile, root);
+#endif
+
+  bool noROMs = true;
+  for (size_t i = 0; i < 68U; i++) {
+    if (!romPaths[i].empty()) {
+      noROMs = false;
+      break;
+    }
+  }
+  if (allowMissingFactoryROMs && noROMs && memConfig.empty()) {
+    // These precisely mirror upstream makecfg default ZX128/CPC128/TVC128
+    // ROM assignments, and are applied only to otherwise *empty* machine
+    // configurations. Existing custom maps are never replaced.
+    struct ROMDefault { size_t slot; const char *name; int offset; };
+    static const ROMDefault zx[] = {
+        {0, "zx128.rom", 0}, {1, "zx128.rom", 16384}};
+    static const ROMDefault cpc[] = {
+        {0, "cpc6128.rom", 16384}, {7, "cpc_amsdos.rom", 0},
+        {16, "cpc6128.rom", 0}};
+    static const ROMDefault tvc[] = {
+        {0, "tvc22_sys.rom", 0}, {2, "tvc22_ext.rom", 0},
+        {3, "tvc_dos12d.rom", 0}};
+    const ROMDefault *defaults = (const ROMDefault *) 0;
+    size_t count = 0;
+    if (machineType == 1) {
+      defaults = zx; count = sizeof(zx) / sizeof(zx[0]);
+    }
+    else if (machineType == 2) {
+      defaults = cpc; count = sizeof(cpc) / sizeof(cpc[0]);
+    }
+    else if (machineType == 3) {
+      defaults = tvc; count = sizeof(tvc) / sizeof(tvc[0]);
+    }
+    if (defaults) {
+      bool filesAvailable = true;
+      for (size_t i = 0; i < count; i++) {
+        std::string romPath = root + "\\roms\\" + defaults[i].name;
+        if (!Ep128EmuWinTrial::exists(romPath))
+          filesAvailable = false;
+      }
+      if (filesAvailable) {
+        for (size_t i = 0; i < count; i++) {
+          romPaths[defaults[i].slot] = root + "\\roms\\" + defaults[i].name;
+          romOffsets[defaults[i].slot] = defaults[i].offset;
+        }
+        romChanged = true;
+      }
+    }
+  }
+
+  bool otherChanged =
+      (memConfig != cfg.memory.configFile ||
+       fileIODir != cfg.fileio.workingDirectory);
+#ifdef ENABLE_SDEXT
+  otherChanged = otherChanged || (sdROM != cfg.sdext.romFile);
+#endif
+  if (!romChanged && !otherChanged)
+    return false;
+
+  if (!Ep128EmuWinTrial::backupUserConfig(
+          configFileName, Ep128Emu::getEp128EmuHomeDirectory(),
+          ".pre-025-rompath.bak")) {
+    (void) MessageBoxW((HWND) 0,
+                       L"Could not back up the original machine settings. "
+                       L"Automatic trial ROM path repair was cancelled.",
+                       L"ep128emu ROM path recovery",
+                       MB_OK | MB_ICONWARNING);
+    return false;
+  }
+  for (size_t i = 0; i < 68U; i++) {
+    cfg.memory.rom[i].file = romPaths[i];
+    cfg.memory.rom[i].offset = romOffsets[i];
+  }
+  const bool memConfigChanged = (memConfig != cfg.memory.configFile);
+  cfg.memory.configFile = memConfig;
+  if (romChanged || memConfigChanged)
+    cfg.memoryConfigurationChanged = true;
+  if (fileIODir != cfg.fileio.workingDirectory) {
+    cfg.fileio.workingDirectory = fileIODir;
+    cfg.fileioSettingsChanged = true;
+  }
+#ifdef ENABLE_SDEXT
+  if (sdROM != cfg.sdext.romFile) {
+    cfg.sdext.romFile = sdROM;
+    cfg.memoryConfigurationChanged = true;
+  }
+#endif
+  return true;
+}
 #endif
 
 static void cfgErrorFunc(void *userData, const char *msg)
@@ -44,19 +317,25 @@ static void cfgErrorFunc(void *userData, const char *msg)
 #endif
 }
 
+static bool fileHasRuntimeMemoryState(const Ep128Emu::File& f)
+{
+  return (f.hasChunkType(Ep128Emu::File::EP128EMU_CHUNKTYPE_MEMORY_STATE) ||
+          f.hasChunkType(Ep128Emu::File::EP128EMU_CHUNKTYPE_ZXMEM_STATE) ||
+          f.hasChunkType(Ep128Emu::File::EP128EMU_CHUNKTYPE_ZX_SNA_FILE) ||
+          f.hasChunkType(Ep128Emu::File::EP128EMU_CHUNKTYPE_ZX_Z80_FILE) ||
+          f.hasChunkType(Ep128Emu::File::EP128EMU_CHUNKTYPE_CPCMEM_STATE) ||
+          f.hasChunkType(Ep128Emu::File::EP128EMU_CHUNKTYPE_CPC_SNA_FILE) ||
+          f.hasChunkType(Ep128Emu::File::EP128EMU_CHUNKTYPE_TVCMEM_STATE));
+}
+
 int8_t getSnapshotType(const Ep128Emu::File& f)
 {
-  if (f.getBufferDataSize() < 40)
+  int machineType = f.getMachineType();
+  if (machineType < 0)
     throw Ep128Emu::Exception("invalid snapshot file");
-  const unsigned char   *buf = f.getBufferData();
-  if (buf[0] != 0x45 || buf[1] != 0x50 || buf[2] != 0x80)
-    throw Ep128Emu::Exception("invalid snapshot file");
-  // check LSB of chunk type (0x455080xx, see src/fileio.hpp)
-  if ((buf[3] & 0xF0) >= 0x20 && (buf[3] & 0xF0) <= 0x40)
-    return int8_t(((buf[3] & 0xF0) >> 4) - 1);  // Spectrum, CPC, TVC
-  if (buf[3] >= 0x0B)                   // Plus/4
+  if (machineType > 3)
     throw Ep128Emu::Exception("unsupported machine type in snapshot file");
-  return 0;                             // Enterprise
+  return int8_t(machineType);
 }
 
 int main(int argc, char **argv)
@@ -74,9 +353,13 @@ int main(int argc, char **argv)
   const char      *cfgFileName = "ep128cfg.dat";
   Ep128Emu::File  *snapshotFile = (Ep128Emu::File *) 0;
   int       snapshotNameIndex = 0;
+  int       loadFileNameIndex = 0;
   int       colorScheme = 0;
   int8_t    machineType = -1;   // 0: EP (default), 1: ZX, 2: CPC, 3: TVC
   int8_t    retval = 0;
+  int       restartMachineType = -1;
+  int       restartLoadType = 0;
+  std::string restartLoadFileName;
 #ifdef DISABLE_OPENGL_DISPLAY
   bool      glEnabled = false;
 #else
@@ -85,6 +368,10 @@ int main(int argc, char **argv)
   bool      glCanDoDoubleBuf = false;
 #endif
   bool      configLoaded = false;
+  bool      startupSnapshotRuntimeMemoryActive = false;
+#ifdef __APPLE__
+  void      *macOSRealtimeActivity = (void *) 0;
+#endif
 
 #ifdef WIN32
   timeBeginPeriod(1U);
@@ -109,8 +396,14 @@ int main(int argc, char **argv)
   try {
     // find out machine type to be emulated
     for (int i = 1; i < argc; i++) {
-      if (std::strcmp(argv[i], "-cfg") == 0 && i < (argc - 1)) {
-        i++;
+      if (std::strcmp(argv[i], "-cfg") == 0) {
+        if (++i >= argc)
+          throw Ep128Emu::Exception("missing configuration file name");
+      }
+      else if (std::strcmp(argv[i], "-loadfile") == 0) {
+        if (++i >= argc)
+          throw Ep128Emu::Exception("missing binary file name");
+        loadFileNameIndex = i;
       }
       else if (std::strcmp(argv[i], "-snapshot") == 0) {
         if (++i >= argc)
@@ -184,7 +477,41 @@ int main(int argc, char **argv)
       }
     }
 
+    // Typed ASCII configuration files can select the machine at startup.
+    // Legacy untyped configuration files remain compatible and do not select one.
+    for (int i = 1; i < argc; i++) {
+      if (std::strcmp(argv[i], "-cfg") == 0 && (i + 1) < argc) {
+        int cfgMachineType =
+            Ep128Emu::ConfigurationDB::getMachineTypeMetadata(argv[++i], false);
+        if (cfgMachineType >= 0) {
+          if (machineType < 0)
+            machineType = int8_t(cfgMachineType);
+          else if (machineType != cfgMachineType) {
+            std::string msg("configuration file is for ");
+            msg += Ep128Emu::File::getMachineTypeName(cfgMachineType);
+            msg += ", but the selected machine is ";
+            msg += Ep128Emu::File::getMachineTypeName(machineType);
+            throw std::runtime_error(msg);
+          }
+        }
+      }
+      else if ((std::strcmp(argv[i], "-snapshot") == 0 ||
+                std::strcmp(argv[i], "-loadfile") == 0 ||
+                std::strcmp(argv[i], "-colorscheme") == 0) &&
+               (i + 1) < argc) {
+        i++;
+      }
+    }
+
     Fl::lock();
+#ifdef __APPLE__
+    // First tape REM engagement may occur immediately during guest startup.
+    // Warm the host sound silently before creating or running the guest VM.
+    (void) ep128emuPrepareMacOSRelayClick();
+    // Replace FLTK's generic macOS About panel so the native application menu
+    // shows this build identity and the exact toolkit patch version.
+    Fl_Sys_Menu_Bar::about(&macOSAboutCallback, (void *) 0);
+#endif
     Ep128Emu::setGUIColorScheme(colorScheme);
     audioOutput = new Ep128Emu::AudioOutput_PortAudio();
 #ifndef DISABLE_OPENGL_DISPLAY
@@ -202,9 +529,36 @@ int main(int argc, char **argv)
     w->end();
     if (snapshotNameIndex > 0) {
       snapshotFile = new Ep128Emu::File(argv[snapshotNameIndex], false);
+      int snapshotMachineType = getSnapshotType(*snapshotFile);
       if (machineType < 0)
-        machineType = getSnapshotType(*snapshotFile);
+        machineType = int8_t(snapshotMachineType);
+      else if (machineType != snapshotMachineType) {
+        std::string msg("snapshot is for ");
+        msg += Ep128Emu::File::getMachineTypeName(snapshotMachineType);
+        msg += ", but the selected machine is ";
+        msg += Ep128Emu::File::getMachineTypeName(machineType);
+        throw std::runtime_error(msg);
+      }
     }
+    if (loadFileNameIndex > 0) {
+      Ep128Emu::File loadFile(argv[loadFileNameIndex], false);
+      int loadMachineType = loadFile.getMachineType();
+      if (loadMachineType > 3)
+        throw Ep128Emu::Exception("unsupported machine type in binary file");
+      if (loadMachineType >= 0) {
+        if (machineType < 0)
+          machineType = int8_t(loadMachineType);
+        else if (machineType != loadMachineType) {
+          std::string msg("binary file is for ");
+          msg += Ep128Emu::File::getMachineTypeName(loadMachineType);
+          msg += ", but the selected machine is ";
+          msg += Ep128Emu::File::getMachineTypeName(machineType);
+          throw std::runtime_error(msg);
+        }
+      }
+    }
+    if (machineType < 0)
+      machineType = 0;
     if (machineType == 1) {
       cfgFileName = "zx128cfg.dat";
       vm = new ZX128::ZX128VM(*(dynamic_cast<Ep128Emu::VideoDisplay *>(w)),
@@ -355,6 +709,7 @@ int main(int argc, char **argv)
         config->loadState(argv[i], false);
       }
       else if (std::strcmp(argv[i], "-snapshot") == 0 ||
+               std::strcmp(argv[i], "-loadfile") == 0 ||
                std::strcmp(argv[i], "-colorscheme") == 0) {
         i++;
       }
@@ -394,17 +749,57 @@ int main(int argc, char **argv)
       }
     }
 #endif
+#ifdef WIN32
+    // Repair stale paths before ROM loading. Skip the missing-ROM factory
+    // fallback for explicit -cfg user choices; only default base configs
+    // are eligible for previously uninitialized ZX/CPC/TVC ROM slots.
+    bool userSpecifiedCfg = false;
+    for (int i = 1; i < argc; i++)
+      userSpecifiedCfg = userSpecifiedCfg || (std::strcmp(argv[i], "-cfg") == 0);
+    (void) repairKnownWindowsTrialConfiguration(
+        *config, int(machineType), cfgFileName, !userSpecifiedCfg);
+#endif
     config->applySettings();
+#ifdef __APPLE__
+    // Request latency-critical scheduling while the emulator is active.
+    // Normal idle system sleep remains allowed.
+    macOSRealtimeActivity = ep128emuBeginMacOSRealtimeActivity();
+#endif
     if (snapshotFile) {
+      bool runtimeMemoryState = fileHasRuntimeMemoryState(*snapshotFile);
       vm->registerChunkTypes(*snapshotFile);
       snapshotFile->processAllChunks();
+      if (runtimeMemoryState)
+        startupSnapshotRuntimeMemoryActive = true;
       delete snapshotFile;
       snapshotFile = (Ep128Emu::File *) 0;
+    }
+    if (loadFileNameIndex > 0) {
+      Ep128Emu::File loadFile(argv[loadFileNameIndex], false);
+      bool runtimeMemoryState = fileHasRuntimeMemoryState(loadFile);
+      bool configState =
+          loadFile.hasChunkType(Ep128Emu::File::EP128EMU_CHUNKTYPE_CONFIG_DB);
+      vm->registerChunkTypes(loadFile);
+      config->registerChunkType(loadFile);
+      loadFile.processAllChunks();
+      if (runtimeMemoryState)
+        startupSnapshotRuntimeMemoryActive = true;
+      else if (configState && startupSnapshotRuntimeMemoryActive)
+        config->memoryConfigurationChanged = true;
+      bool memoryConfigurationChanged = config->memoryConfigurationChanged;
+      config->applySettings();
+      if (memoryConfigurationChanged)
+        startupSnapshotRuntimeMemoryActive = false;
     }
     vmThread = new Ep128Emu::VMThread(*vm);
     gui_ = new Ep128EmuGUI(*(dynamic_cast<Ep128Emu::VideoDisplay *>(w)),
                            *audioOutput, *vm, *vmThread, *config);
+    if (startupSnapshotRuntimeMemoryActive)
+      gui_->setSnapshotRuntimeMemoryActive(true);
     gui_->run();
+    restartMachineType = gui_->getRestartMachineType();
+    restartLoadType = gui_->getRestartLoadType();
+    restartLoadFileName = gui_->getRestartLoadFileName();
   }
   catch (std::exception& e) {
     if (snapshotFile) {
@@ -432,6 +827,7 @@ int main(int argc, char **argv)
     if (configLoaded) {
       try {
         Ep128Emu::File  f;
+        f.addMachineTypeMetadata(machineType);
         config->saveState(f);
         f.writeFile(cfgFileName, true);
       }
@@ -452,6 +848,24 @@ int main(int argc, char **argv)
     delete audioOutput;
 #ifdef WIN32
   timeEndPeriod(1U);
+#endif
+#ifdef __APPLE__
+  if (retval == 0 && restartMachineType >= 0 &&
+      !restartAsMacOSMachine(restartMachineType, restartLoadType,
+                             restartLoadFileName)) {
+    std::fprintf(stderr, "WARNING: failed to restart ep128emu for machine type %d\n",
+                 restartMachineType);
+    retval = int8_t(-1);
+  }
+#elif defined(WIN32)
+  if (retval == 0 && restartMachineType >= 0 &&
+      !restartAsWindowsMachine(restartMachineType, restartLoadType,
+                               restartLoadFileName)) {
+    (void) MessageBoxW((HWND) 0,
+                      L"Could not start ep128emu in the selected machine mode.",
+                      L"ep128emu machine switch", MB_OK | MB_ICONWARNING);
+    retval = int8_t(-1);
+  }
 #endif
   return int(retval);
 }

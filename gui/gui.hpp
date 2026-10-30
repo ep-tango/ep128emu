@@ -35,6 +35,12 @@
 #include "cfg_db.hpp"
 #include "emucfg.hpp"
 #include "script.hpp"
+#if defined(__APPLE__) || defined(WIN32)
+#  include "speccydos_trial_media.hpp"
+#  include "betadisk_trial_media.hpp"
+#  include "betadisk_bundled_rom.hpp"
+#  include "betadisk_trdos_keyboard.hpp"
+#endif
 
 #include <FL/Fl_Menu_Item.H>
 #include <FL/Fl_File_Chooser.H>
@@ -48,11 +54,14 @@ class Ep128EmuGUI_SoundConfigWindow;
 class Ep128EmuGUI_MachineConfigWindow;
 class Ep128EmuGUI_DebugWindow;
 class Ep128EmuGUI_AboutWindow;
+class Ep128EmuGUI_ShortcutConfigWindow;
 class Ep128EmuGUIMonitor;
 class Ep128EmuGUI_LuaScript;
 class Ep128EmuGUI_ScrollableOutput;
 
 #include "debugger.hpp"
+#include "shortcut_cfg.hpp"
+#include <atomic>
 #include "gui_fl.hpp"
 #include "disk_cfg_fl.hpp"
 #include "disp_cfg_fl.hpp"

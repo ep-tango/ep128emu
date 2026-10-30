@@ -432,8 +432,7 @@ namespace Ep128 {
         if (segmentTable[i] != (uint8_t *) 0) {
           buf.writeByte(uint8_t(i));
           buf.writeBoolean(segmentROMTable[i]);
-          for (size_t j = 0; j < 16384; j++)
-            buf.writeByte(segmentTable[i][j]);
+          buf.writeData(segmentTable[i], 16384);
         }
       }
     }

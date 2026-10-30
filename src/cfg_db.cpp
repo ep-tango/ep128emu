@@ -696,7 +696,8 @@ namespace Ep128Emu {
 
   // --------------------------------------------------------------------------
 
-  void ConfigurationDB::saveState(const char *fileName, bool useHomeDirectory)
+  void ConfigurationDB::saveState(const char *fileName, bool useHomeDirectory,
+                                  const char *headerComment)
   {
     if (fileName == (char *) 0 || fileName[0] == '\0')
       throw Exception("invalid file name");
@@ -715,6 +716,10 @@ namespace Ep128Emu {
       throw Exception("error opening configuration file");
     bool  err = false;
     try {
+      if (headerComment && headerComment[0] != '\0') {
+        if (std::fprintf(f, "# %s\n", headerComment) < 0)
+          err = true;
+      }
       std::map< std::string, ConfigurationVariable * >::iterator  i;
       for (i = db.begin(); i != db.end(); i++) {
         ConfigurationVariable&  cv = *((*i).second);
@@ -770,6 +775,199 @@ namespace Ep128Emu {
       err = true;
     if (err)
       throw Exception("error writing configuration file - is the disk full ?");
+  }
+
+  void ConfigurationDB::saveStateBufferAsASCII(
+      File::Buffer& buf, const char *fileName, bool useHomeDirectory,
+      const char *headerComment)
+  {
+    if (fileName == (char *) 0 || fileName[0] == '\0')
+      throw Exception("invalid file name");
+
+    std::string fullName;
+    if (useHomeDirectory) {
+      fullName = getEp128EmuHomeDirectory();
+#ifdef WIN32
+      fullName += '\\';
+#else
+      fullName += '/';
+#endif
+    }
+    fullName += fileName;
+
+    std::FILE *f = fileOpen(fullName.c_str(), "w");
+    if (!f)
+      throw Exception("error opening configuration file");
+
+    bool err = false;
+    try {
+      if (headerComment && headerComment[0] != '\0')
+        err = (std::fprintf(f, "# %s\n", headerComment) < 0);
+
+      buf.setPosition(0);
+      while (!err && buf.getPosition() < buf.getDataSize()) {
+        int type = int(buf.readUInt32());
+        if (type < 1 || type > 5)
+          throw Exception("unknown configuration variable type");
+        std::string name = buf.readString();
+
+        if (std::fprintf(f, "%s\t", name.c_str()) < 0) {
+          err = true;
+          break;
+        }
+
+        switch (type) {
+        case 0x00000001:
+          err = (std::fprintf(f, "%s\n",
+                              (buf.readBoolean() ? "Yes" : "No")) < 0);
+          break;
+        case 0x00000002:
+          err = (std::fprintf(f, "%d\n", int(buf.readInt32())) < 0);
+          break;
+        case 0x00000003:
+          err = (std::fprintf(f, "%u\n",
+                              (unsigned int) buf.readUInt32()) < 0);
+          break;
+        case 0x00000004:
+          err = (std::fprintf(f, "%.9g\n", buf.readFloat()) < 0);
+          break;
+        case 0x00000005:
+          {
+            std::string s = buf.readString();
+            err = (std::fputc('"', f) == EOF);
+            size_t j = 0;
+            while (j < s.length() && !err) {
+              unsigned char c = (unsigned char) s[j];
+              if (c >= 32 && c != 127) {
+                if (c == '"' || c == '\\')
+                  err = (std::fputc('\\', f) == EOF);
+                if (!err)
+                  err = (std::fputc(c, f) == EOF);
+              }
+              else {
+                err = (std::fprintf(f, "\\%03o",
+                                    (unsigned int) c) < 0);
+              }
+              j++;
+            }
+            if (!err)
+              err = (std::fprintf(f, "\"\n") < 0);
+          }
+          break;
+        }
+      }
+
+      if (!err)
+        err = (std::fputc('\n', f) == EOF);
+    }
+    catch (...) {
+      std::fclose(f);
+      throw;
+    }
+
+    if (std::fclose(f) != 0)
+      err = true;
+    if (err)
+      throw Exception("error writing configuration file - is the disk full ?");
+  }
+
+  int ConfigurationDB::getMachineTypeMetadata(const char *fileName,
+                                                 bool useHomeDirectory)
+  {
+    if (fileName == (char *) 0 || fileName[0] == '\0')
+      throw Exception("invalid file name");
+    std::string fullName;
+    if (useHomeDirectory) {
+      fullName = getEp128EmuHomeDirectory();
+#ifdef WIN32
+      fullName += '\\';
+#else
+      fullName += '/';
+#endif
+    }
+    fullName += fileName;
+    std::FILE *f = fileOpen(fullName.c_str(), "r");
+    if (!f)
+      throw Exception("error opening configuration file");
+
+    int result = -1;
+    char lineBuf[512];
+    for (int lineCnt = 0; lineCnt < 64 && std::fgets(lineBuf, sizeof(lineBuf), f);
+         lineCnt++) {
+      std::string s(lineBuf);
+      while (!s.empty() &&
+             (s[s.size() - 1] == '\n' || s[s.size() - 1] == '\r' ||
+              s[s.size() - 1] == ' ' || s[s.size() - 1] == '\t'))
+        s.resize(s.size() - 1);
+      size_t p = 0;
+      while (p < s.size() && (s[p] == ' ' || s[p] == '\t'))
+        p++;
+      if (p >= s.size())
+        continue;
+      if (s[p] != '#')
+        break;
+      p++;
+      while (p < s.size() && (s[p] == ' ' || s[p] == '\t'))
+        p++;
+      std::string tag(s.substr(p));
+      stringToLowerCase(tag);
+      const std::string prefix("ep128emu-machine:");
+      if (tag.compare(0, prefix.size(), prefix) != 0)
+        continue;
+      std::string value(tag.substr(prefix.size()));
+      while (!value.empty() && (value[0] == ' ' || value[0] == '\t'))
+        value.erase(0, 1);
+      while (!value.empty() &&
+             (value[value.size() - 1] == ' ' || value[value.size() - 1] == '\t'))
+        value.resize(value.size() - 1);
+      if (value == "ep" || value == "enterprise" || value == "enterprise 128")
+        result = 0;
+      else if (value == "zx" || value == "zx spectrum" || value == "spectrum")
+        result = 1;
+      else if (value == "cpc" || value == "amstrad cpc")
+        result = 2;
+      else if (value == "tvc" || value == "videoton tvc")
+        result = 3;
+      else {
+        std::fclose(f);
+        throw Exception("invalid machine type metadata in configuration file");
+      }
+      break;
+    }
+    std::fclose(f);
+    if (result >= 0)
+      return result;
+
+    // Legacy configuration files predate the explicit machine tag.  Keep
+    // arbitrary untyped .cfg files fully backward compatible, but recognize
+    // the canonical ep128emu config tree where the machine family is encoded
+    // by the directory name.  This allows the stock EP/ZX/CPC/TVC presets to
+    // participate in the same machine-switch guard without guessing from ROM
+    // names, clock frequencies, or partial key sets.
+    std::string pathName(fullName);
+    for (size_t i = 0; i < pathName.size(); i++) {
+      if (pathName[i] == '\\')
+        pathName[i] = '/';
+    }
+    stringToLowerCase(pathName);
+    const std::string configMarker("/ep128emu/config/");
+    size_t configPos = pathName.find(configMarker);
+    if (configPos != std::string::npos) {
+      size_t familyPos = configPos + configMarker.size();
+      size_t familyEnd = pathName.find('/', familyPos);
+      if (familyEnd != std::string::npos && familyEnd > familyPos) {
+        std::string family(pathName.substr(familyPos, familyEnd - familyPos));
+        if (family == "zx")
+          return 1;
+        if (family == "cpc")
+          return 2;
+        if (family == "tvc")
+          return 3;
+        if (family == "ep64" || family.compare(0, 5, "ep128") == 0)
+          return 0;
+      }
+    }
+    return -1;
   }
 
   void ConfigurationDB::loadState(const char *fileName, bool useHomeDirectory)

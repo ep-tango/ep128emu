@@ -112,7 +112,8 @@ namespace Ep128Emu {
    */
   void writePNGImage(const char *fileName,
                      const unsigned char *inBuf, int w, int h, int nColors,
-                     bool optimizePalette = false, size_t blockSize = 16384);
+                     bool optimizePalette = false, size_t blockSize = 16384,
+                     bool exclusiveCreate = false);
 
 }       // namespace Ep128Emu
 
