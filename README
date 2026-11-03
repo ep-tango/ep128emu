@@ -4,9 +4,18 @@ EP128Emu 2.1
 Download the current macOS ARM64 and Windows x86/x64 releases from:
 https://github.com/ep-tango/ep128emu/releases/tag/v2.1
 
-This repository contains the 2.1 source. On macOS, version 2.1 requires
-FLTK 1.4.5 rather than the historic FLTK versions listed below. The original upstream README is archival context
-and may include platforms and features not in the supplied releases.
+Published EP128Emu 2.1 binaries are available for macOS ARM64 and
+Windows x64 / Windows x86 (including Windows 7 x86).
+
+Linux status for this custom 2.1 release: no Linux binary is provided,
+and the modified code has not been built or regression-tested on Linux.
+The original upstream ep128emu did support Linux/POSIX. Linux support for
+this custom fork is under consideration, not yet a supported release target.
+
+This repository contains the 2.1 source; macOS 2.1 requires FLTK 1.4.5.
+The historical upstream documentation below is preserved for reference.
+Its platform and feature claims describe the original upstream emulator,
+not necessarily the currently published custom 2.1 binaries.
 
 Upstream background
 -------------------
