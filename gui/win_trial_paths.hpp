@@ -68,55 +68,15 @@ namespace Ep128EmuWinTrial {
     return s;
   }
 
-  // Migrate missing files ONLY from obsolete T001/T002/T003 trial install
-  // roots to the actual executable directory. Do not rewrite existing
-  // paths, user-owned custom locations, or paths containing "..".
+  // Preserve user-specified paths. Obsolete pre-public trial relocation
+  // is intentionally retired; missing paths remain unchanged rather
+  // than being silently redirected to another installation directory.
   inline std::string relocateMissing(const std::string& oldPath,
                                       const std::string& currentRoot,
                                       bool isDirectory = false) {
-    if (oldPath.empty() || currentRoot.empty() ||
-        exists(oldPath, isDirectory))
-      return oldPath;
-    const std::string oldNorm = normalize(oldPath);
-    const std::string::size_type i = oldNorm.find("/ep128emu-2.0.12-");
-    if (i == std::string::npos)
-      return oldPath;
-    const std::string::size_type first = i + std::string("/ep128emu-2.0.12-").size();
-    if (first >= oldNorm.size())
-      return oldPath;
-    const std::string::size_type slash = oldNorm.find('/', first);
-    if (slash == std::string::npos)
-      return oldPath;
-    std::string oldTrial = oldNorm.substr(first, slash - first);
-    // The pre-0.24 fixed Windows x64 installation lived at
-    // ep128emu-2.0.12-trial. This is an exact historical root name,
-    // not an invitation to rebase arbitrary user-specified ROM locations.
-    if (oldTrial != "t001" && oldTrial != "t002" &&
-        oldTrial != "t003" && oldTrial != "trial")
-      return oldPath;
-    std::string relative = oldNorm.substr(slash + 1);
-    if (relative.find("../") != std::string::npos ||
-        relative.find("/..") != std::string::npos ||
-        relative.find(':') != std::string::npos ||
-        relative.find("//") != std::string::npos ||
-        relative.empty())
-      return oldPath;
-    bool authorized = (isDirectory &&
-                       (relative == "roms" || relative == "files" ||
-                        relative == "config" || relative == "disk" ||
-                        relative == "tape" || relative == "snapshot" ||
-                        relative == "demo")) ||
-                      relative.compare(0, 5, "roms/") == 0 ||
-                      relative.compare(0, 6, "files/") == 0 ||
-                      relative.compare(0, 7, "config/") == 0 ||
-                      relative.compare(0, 5, "disk/") == 0 ||
-                      relative.compare(0, 5, "tape/") == 0 ||
-                      relative.compare(0, 9, "snapshot/") == 0 ||
-                      relative.compare(0, 5, "demo/") == 0;
-    if (!authorized)
-      return oldPath;
-    std::string candidate(currentRoot + "\\" + relative);
-    return exists(candidate, isDirectory) ? candidate : oldPath;
+    (void) currentRoot;
+    (void) isDirectory;
+    return oldPath;
   }
 
   inline bool backupUserConfig(const char *fileName,
