@@ -12,7 +12,7 @@ spec.loader.exec_module(n)
 class TestNames(unittest.TestCase):
     def test_exact_five(self):
         for platform,basename in {
-            "mac_universal":"ep128emu-2.7-mac.zip",
+            "mac_universal":"ep128emu-2.7-mac-universal.zip",
             "mac_arm64":"ep128emu-2.7-mac-arm64.zip",
             "win64":"ep128emu-2.7-win64.exe",
             "win32":"ep128emu-2.7-win32.exe",
@@ -22,6 +22,11 @@ class TestNames(unittest.TestCase):
             self.assertNotIn("R9",basename)
             self.assertNotIn("TEST",basename)
             self.assertNotIn("installer",basename)
+    def test_public_universal_release_name(self):
+        self.assertEqual(n.expected("2.1.1","mac_universal"),
+                         "ep128emu-2.1.1-mac-universal.zip")
+        self.assertNotEqual(n.expected("2.1.1","mac_universal"),
+                            "ep128emu-2.1.1-mac.zip")
     def test_future_version_increments_real_version(self):
         self.assertEqual(n.expected("2.7.1","win64"),
                          "ep128emu-2.7.1-win64.exe")

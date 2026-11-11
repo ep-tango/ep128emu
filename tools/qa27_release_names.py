@@ -19,13 +19,23 @@ def expected(version, platform):
         raise ValueError("INVALID_RELEASE_VERSION")
     if version != "2.1.1" and tuple(map(int,version.split("."))) < (2,7):
         raise ValueError("SHORT_NAME_POLICY_APPLIES_TO_2_1_1_PUBLIC_OR_2_7_TRIAL")
-    data=json.loads(POLICY.read_text())
-    templates=data["release_2_7_extension"]["file_names"]
+    if POLICY.is_file():
+        data=json.loads(POLICY.read_text())
+        templates=data["release_2_7_extension"]["file_names"]
+    else:
+        # Public source archives intentionally omit private release metadata.
+        templates={
+            "mac_universal":"ep128emu-{version}-mac-universal.zip",
+            "mac_arm64":"ep128emu-{version}-mac-arm64.zip",
+            "win64":"ep128emu-{version}-win64.exe",
+            "win32":"ep128emu-{version}-win32.exe",
+            "linux_x86_64":"ep128emu-{version}-linux.tar.gz",
+        }
     if tuple(templates)!=PLATFORMS or platform not in templates:
         raise ValueError("UNAPPROVED_PLATFORM")
     result=templates[platform].format(version=version)
     if not re.fullmatch(
-        rf"ep128emu-{re.escape(version)}-(?:mac|mac-arm64|win64|win32|linux)"
+        rf"ep128emu-{re.escape(version)}-(?:mac-universal|mac-arm64|win64|win32|linux)"
         r"\.(?:zip|exe|tar\.gz)",result):
         raise ValueError("VERBOSE_OR_INVALID_HANDOFF_NAME")
     return result

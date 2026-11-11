@@ -5,7 +5,7 @@ Previous public release: v2.1 (2026-10-30).
 
 Release targets (all compiled from the same source commit):
 - macOS Universal: Apple Silicon ARM64 + Intel x86_64 (FLTK 1.4.5).
-  Planned corrected filename: ep128emu-2.1.1-mac-universal.zip.
+  Archive filename: ep128emu-2.1.1-mac-universal.zip.
 - macOS ARM64-only: native Apple Silicon build (FLTK 1.4.5).
 - Windows x64: MSYS2 UCRT64 / NSIS installer.
 - Windows x86: MSYS2 MinGW32 / NSIS installer (Windows 7 target).
