@@ -1,5 +1,18 @@
-Changes in version 2.0.12
--------------------------
+Changes in public version 2.1.1 (2026-11-11)
+---------------------------------------------
+  * five release targets: macOS Universal, macOS ARM64, Windows x64,
+    Windows x86 and generic Linux x86_64
+  * machine-specific icons in the macOS Dock and Windows taskbar
+  * complete factory ROM catalog/configuration coverage restored
+  * fixes and features developed since public custom version 2.1,
+    including rewind, media export, archive handling and portability
+  * short per-platform installer/archive filenames
+
+Previous public custom release: 2.1 (2026-10-30).
+The intermediate 2.0.12 was an INTERNAL development version only.
+
+Internal development history: 2.0.12 (NOT a public release)
+----------------------------------------------------------
 
   * macOS ARM64: direct restart between Enterprise, ZX Spectrum, Amstrad CPC and Videoton TVC
   * added configurable application shortcuts with direct key-combination capture
@@ -30,7 +43,8 @@ Changes in version 2.0.12
   * hardened VM-thread lock/unlock synchronization, eliminating an intermittent "emulation thread does not respond" race during rapid configuration/reset transitions
   * protected Archive Drag & Run temporary Standard 128K state from leaking into Save as ASCII configuration exports
 
-  This 2.0.12 macOS ARM64 release is a custom continuation of ep128emu 2.0.11.2.
+  These 2.0.12-era features were developed internally and later incorporated
+  into public custom releases; 2.0.12 itself was never publicly released.
   Original emulator by Istvan Varga; custom macOS enhancements by Attila G.
 
 Changes in version 2.0.11.2

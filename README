@@ -1,12 +1,20 @@
-EP128EMU CUSTOM - PLATFORM NOTE (2026-11-03)
-The custom 2.1 binaries are macOS ARM64, Windows x64 and Windows x86.
-The original 2.0.12 documentation below mentions Linux/POSIX, but this
-is not a tested Linux support claim for the custom fork.
-Linux feasibility is tracked as FEATURE_BACKLOG.md LINUX-01 (unranked).
-Public status: https://github.com/ep-tango/ep128emu/blob/master/README
+EP128Emu 2.1.1 - public release (2026-11-11)
+=================================================
+Supported release packages:
+  * macOS Universal (Apple Silicon ARM64 and Intel x86_64)
+  * macOS ARM64-only
+  * Windows x64 and Windows x86 (Win7-target build)
+  * Linux x86_64 (generic glibc package, built on Debian 12)
 
-ep128emu 2.0.12
-=================
+Previous public custom release: 2.1 (2026-10-30).
+The version number 2.0.12 was used for INTERNAL development only;
+there was no separate public 2.0.12 release.
+Original ep128emu 2.0.11.2 by Istvan Varga; this fork adds
+cross-platform features and fixes. See NEWS for change history.
+Public downloads: https://github.com/ep-tango/ep128emu/releases/tag/v2.1.1
+
+ep128emu - emulator overview
+===========================
 
 ep128emu is an open source, portable emulator of the Enterprise 128,
 ZX Spectrum 48/128, Amstrad CPC 464/664/6128 and Videoton TVC computers,

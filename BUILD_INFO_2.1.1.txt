@@ -1,0 +1,20 @@
+EP128Emu 2.1.1 - public build information
+
+Public release: https://github.com/ep-tango/ep128emu/releases/tag/v2.1.1
+Previous public release: v2.1 (2026-10-30).
+Version 2.0.12 was internal development only, never a public release.
+
+Release targets (all compiled from the same source commit):
+- macOS Universal: Apple Silicon ARM64 + Intel x86_64 (FLTK 1.4.5).
+  Planned corrected filename: ep128emu-2.1.1-mac-universal.zip.
+- macOS ARM64-only: native Apple Silicon build (FLTK 1.4.5).
+- Windows x64: MSYS2 UCRT64 / NSIS installer.
+- Windows x86: MSYS2 MinGW32 / NSIS installer (Windows 7 target).
+- Linux x86_64: native Debian 12 / glibc 2.36 / FLTK 1.4.5.
+- Public source archive: filtered source only; no internal project state.
+
+All five platform packages passed native clean builds and source
+integrity checks. Binary release assets and source archive are available
+at the public release URL above; they have short, per-platform names.
+The existing Windows v2.1 installation identity and user-owned data
+are preserved by the upgrade installer.
