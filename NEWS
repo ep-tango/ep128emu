@@ -1,7 +1,21 @@
 Changes in version 2.1.1
 ------------------------
-Editorial draft — the v2.1 to v2.1.1 changes are pending selection.
-Do not publish this draft until the maintainer has approved the NEWS items.
+  * Added a Universal macOS build for Apple Silicon (ARM64) and Intel
+    (x86_64) Macs.
+  * Added a native, generic Linux x86_64 release package.
+  * Added machine-specific macOS Dock and Windows taskbar icons, plus
+    Linux desktop launchers for Enterprise, ZX Spectrum, CPC and TVC.
+  * Rewind now supports mounted regular floppy .IMG files when the disk
+    controller is idle.
+  * Rewind prevents unsafe restoration after disk writes, media changes
+    or external disk-image modifications.
+  * Added rewind safeguards for host FILE: operations, tape and demo
+    activity, and printer output; unsafe restores are blocked.
+  * Improved rewind memory accounting to include retained history
+    allocations.
+  * Added a status message when active IDE/SD storage blocks rewind.
+  * Windows installers now allow destination-folder selection and
+    retain the existing installation location during upgrades.
 
 Changes in version 2.0.11.2
 ---------------------------
