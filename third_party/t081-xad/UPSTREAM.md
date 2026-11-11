@@ -23,3 +23,14 @@ Source-only hygiene:
 - Upstream prebuilt Windows binary artifacts were intentionally removed from
   the vendored snapshot: Windows/Foundation.1.0.dll, Windows/lib/libbz2.a,
   and Windows/lib/libz.a. They are irrelevant to the macOS helper build.
+
+
+Security/source-archive hygiene (2026-11-01):
+- Removed upstream `XADMasterTests/eicar.bz` (the intentionally embedded
+  EICAR antivirus test marker), and its sole XADZippedBzip2LeakTests.m
+  consumer plus stale Xcode project references. The test fixture is NOT
+  needed to build `ep128emu-unar` or decode RAR.
+- Reproduced Microsoft Defender `Virus:DOS/EICAR_Test_File` detection
+  in the source ZIP at precisely `XADMasterTests/eicar.bz`.
+- Remaining upstream licensed decoder sources and the normal Mac build
+  are preserved; no anti-malware exclusions or scan suppression required.

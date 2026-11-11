@@ -23,6 +23,7 @@
 #include "system.hpp"
 
 #include <vector>
+#include <sys/stat.h>
 #ifndef WIN32
 #  include <unistd.h> // fsync for original-SDD durability
 #endif
@@ -216,7 +217,10 @@ namespace Ep128Emu {
       flagsBuffer((uint8_t *) 0),
       tmpBuffer((uint8_t *) 0),
       bufPos(-1L),
-      trackDirtyFlag(false)
+      trackDirtyFlag(false),
+      mediaWriteEpoch(0U),
+      mediaMountEpoch(0U),
+      rewindWriteGuard(false)
   {
     buf_.resize(0);
     this->reset();
@@ -230,6 +234,148 @@ namespace Ep128Emu {
       if (imageFile) std::fclose(imageFile);
       imageFile = (std::FILE *) 0;
     }
+  }
+
+  static void rewindIdentityMix(uint64_t& h, uint64_t v)
+  {
+    // Stable, non-cryptographic metadata signature; actual file identity is
+    // checked by the OS using both the mounted handle and its current path.
+    for (int i = 0; i < 8; ++i) {
+      h ^= uint8_t(v >> (8 * i));
+      h *= UINT64_C(1099511628211);
+    }
+  }
+
+  uint64_t FloppyDrive::getRewindImageIdentity() const
+  {
+    if (!imageFile)
+      return 0U;
+    uint64_t h = UINT64_C(1469598103934665603);
+#ifdef WIN32
+    // ep_fopen() returns a raw Win32 HANDLE cast to FILE*, NOT a CRT FILE*.
+    // Passing it to _fileno()/ _get_osfhandle() causes a CRT access violation
+    // when the rewind identity is queried (including during VM startup).
+    // Keep native file-ID comparison against the path: it detects external
+    // replacement of a mounted IMG without touching guest disk contents.
+    HANDLE nativeHandle = HANDLE(imageFile);
+    if (!nativeHandle || nativeHandle == INVALID_HANDLE_VALUE)
+      return 0U;
+    HANDLE pathHandle = CreateFileA(imageFileName.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (pathHandle == INVALID_HANDLE_VALUE)
+      return 0U;
+    BY_HANDLE_FILE_INFORMATION live, byPath;
+    bool ok = GetFileInformationByHandle(nativeHandle, &live) &&
+              GetFileInformationByHandle(pathHandle, &byPath);
+    CloseHandle(pathHandle);
+    if (!ok || live.dwVolumeSerialNumber != byPath.dwVolumeSerialNumber ||
+        live.nFileIndexHigh != byPath.nFileIndexHigh ||
+        live.nFileIndexLow != byPath.nFileIndexLow)
+      return 0U;
+    rewindIdentityMix(h, live.dwVolumeSerialNumber);
+    rewindIdentityMix(h, (uint64_t(live.nFileIndexHigh) << 32) |
+                           uint64_t(live.nFileIndexLow));
+    rewindIdentityMix(h, (uint64_t(live.nFileSizeHigh) << 32) |
+                           uint64_t(live.nFileSizeLow));
+    rewindIdentityMix(h, (uint64_t(live.ftLastWriteTime.dwHighDateTime) << 32) |
+                           uint64_t(live.ftLastWriteTime.dwLowDateTime));
+#else
+    struct stat opened, byPath;
+    if (fstat(fileno(imageFile), &opened) != 0 ||
+        stat(imageFileName.c_str(), &byPath) != 0 ||
+        !S_ISREG(opened.st_mode) || !S_ISREG(byPath.st_mode) ||
+        opened.st_dev != byPath.st_dev || opened.st_ino != byPath.st_ino)
+      return 0U;
+    rewindIdentityMix(h, uint64_t(opened.st_dev));
+    rewindIdentityMix(h, uint64_t(opened.st_ino));
+    rewindIdentityMix(h, uint64_t(opened.st_size));
+    rewindIdentityMix(h, uint64_t(opened.st_mtime));
+    rewindIdentityMix(h, uint64_t(opened.st_ctime));
+#  if defined(__APPLE__)
+    rewindIdentityMix(h, uint64_t(opened.st_mtimespec.tv_nsec));
+    rewindIdentityMix(h, uint64_t(opened.st_ctimespec.tv_nsec));
+#  elif defined(__linux__)
+    rewindIdentityMix(h, uint64_t(opened.st_mtim.tv_nsec));
+    rewindIdentityMix(h, uint64_t(opened.st_ctim.tv_nsec));
+#  endif
+#endif
+    return h ? h : 1U;
+  }
+
+  bool FloppyDrive::isRewindRegularImageEligible() const
+  {
+    if (!imageFile)
+      return true;
+    // Scope explicitly to normal flat .IMG files. SDD/TRD/physical floppy
+    // and unusual host device paths retain the historical rewind barrier.
+    size_t n = imageFileName.size();
+    if (n < 4 || imageFileName[n - 4] != '.' ||
+        (imageFileName[n - 3] != 'i' && imageFileName[n - 3] != 'I') ||
+        (imageFileName[n - 2] != 'm' && imageFileName[n - 2] != 'M') ||
+        (imageFileName[n - 1] != 'g' && imageFileName[n - 1] != 'G'))
+      return false;
+    return getRewindImageIdentity() != 0U;
+  }
+
+  bool FloppyDrive::getRewindIdleState(RewindIdleState& state) const
+  {
+    // In-flight transfers and pending writes cannot be reconstructed by
+    // invalidating the track cache. Rewind at an idle boundary only.
+    if (bufPos >= 0L || trackDirtyFlag ||
+        !isRewindRegularImageEligible())
+      return false;
+    state.imageFileName = imageFileName;
+    state.mediaWriteEpoch = mediaWriteEpoch;
+    state.mediaMountEpoch = mediaMountEpoch;
+    state.mounted = haveDisk();
+    state.writeProtected = getIsWriteProtected();
+    state.currentTrack = currentTrack;
+    state.currentSide = currentSide;
+    state.nTracks = nTracks;
+    state.nSides = nSides;
+    state.nSectorsPerTrack = nSectorsPerTrack;
+    state.bytesPerSector = bytesPerSector;
+    state.diskChangeFlag = diskChangeFlag;
+    state.motorOnInput = motorOnInput;
+    state.isMotorOn = isMotorOn;
+    state.ledStateCounter = ledStateCounter;
+    return true;
+  }
+
+  bool FloppyDrive::canRestoreRewindIdleState(
+      const RewindIdleState& s) const
+  {
+    return (bufPos < 0L && !trackDirtyFlag &&
+            isRewindRegularImageEligible() &&
+            haveDisk() == s.mounted &&
+            mediaWriteEpoch == s.mediaWriteEpoch &&
+            mediaMountEpoch == s.mediaMountEpoch &&
+            imageFileName == s.imageFileName &&
+            nTracks == s.nTracks && nSides == s.nSides &&
+            nSectorsPerTrack == s.nSectorsPerTrack &&
+            bytesPerSector == s.bytesPerSector &&
+            getIsWriteProtected() == s.writeProtected);
+  }
+
+  bool FloppyDrive::restoreRewindIdleState(const RewindIdleState& s)
+  {
+    if (!canRestoreRewindIdleState(s))
+      return false;
+    currentTrack = s.currentTrack;
+    currentSide = s.currentSide;
+    diskChangeFlag = s.diskChangeFlag;
+    motorOnInput = s.motorOnInput;
+    isMotorOn = s.isMotorOn;
+    ledStateCounter = s.ledStateCounter;
+    // The disk is immutable within the write epoch: force the next read to
+    // fetch from the host image. Never flush or replay a write on restore.
+    bufferedTrack = 0xFF;
+    bufferedSide = 0xFF;
+    bufPos = -1L;
+    if (imageFile)
+      clearFlagsBuffer();
+    return true;
   }
 
   void FloppyDrive::doStep(int n)
@@ -323,6 +469,9 @@ namespace Ep128Emu {
          writableTRDCopy_ == writableTRDCopy)) {
       return;
     }
+    // Bump even when the replacement mount subsequently fails.
+    // A historical checkpoint must never survive eject/remount by name.
+    ++mediaMountEpoch;
     diskChangeFlag = true;
     closeDiskImage();
     this->reset();
@@ -513,6 +662,9 @@ namespace Ep128Emu {
   {
     if (bufPos < 0L || (bufPos % long(bytesPerSector)) == 0L)
       return;
+    if (rewindWriteGuard)
+      throw Exception("FDD: host write forbidden during frame render");
+    ++mediaWriteEpoch;
     do {
       trackBuffer[bufPos] = 0x00;
       bufPos++;
@@ -661,6 +813,8 @@ namespace Ep128Emu {
 
   bool FloppyDrive::flushTrack()
   {
+    if (rewindWriteGuard && trackDirtyFlag)
+      throw Exception("FDD: host flush forbidden during frame render");
     if (!trackDirtyFlag)
       return true;
     if (nativeSDDWritable || writableTRDCopy) {

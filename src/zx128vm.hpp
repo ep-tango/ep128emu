@@ -76,6 +76,7 @@ namespace ZX128 {
      public:
       void rewindTapeFile();
       void closeTapeFile();
+      bool hasOpenHostTapeFile() const { return tapFile != 0; }
     };
     class Memory_ : public Memory {
      private:
@@ -154,6 +155,8 @@ namespace ZX128 {
     // keyboard state will be cleared
     bool      snapshotLoadFlag;
     bool      rewindRestoreMode;
+    bool      rewindRenderMode;
+    uint64_t  rewindHostIOEpoch;
     // used for counting time between demo events (in ULA cycles)
     uint64_t  demoTimeCnt;
     uint8_t   breakPointPriorityThreshold;
@@ -467,6 +470,10 @@ namespace ZX128 {
      */
     virtual bool getIsPlayingDemo() const;
     virtual bool getIsRewindRestoreSupported() const;
+    virtual uint64_t getRewindHostIOEpoch() const;
+    virtual void setRewindRenderMode(bool enabled);
+    virtual void setWorkingDirectory(const std::string& dirName_);
+    virtual void setEnableFileIO(bool enabled);
     virtual bool getRewindRuntimeState(
         Ep128Emu::VirtualMachine::RewindRuntimeState& state) const;
     virtual bool restoreRewindRuntimeState(

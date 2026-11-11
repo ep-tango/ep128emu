@@ -10,6 +10,48 @@ static NSTextField *ep128emuStatusField = nil;
 static NSRunningApplication *ep128emuDragSourceApplication = nil;
 static NSSound *ep128emuRelayClickSound = nil;
 
+// Update the running application's Dock tile without modifying its .app
+// bundle icon, executable identity or the existing machine-specific window
+// icons. Startup/guest-machine switching creates a new emulation process,
+// and this runs after its first FLTK window is shown.
+void ep128emuSetMacOSMachineDockIcon(int machineIconIndex)
+{
+  if (machineIconIndex < 0 || machineIconIndex > 3)
+    return;
+  @autoreleasepool {
+    static NSString * const iconNames[4] = {
+      @"ep128emu", @"zx128emu", @"cpc464emu", @"tvc64emu"
+    };
+    NSString *extension = (machineIconIndex == 0 ? @"icns" : @"png");
+    NSString *path = [[NSBundle mainBundle]
+        pathForResource:iconNames[machineIconIndex] ofType:extension];
+    if (!path)
+      return; // Unbundled developer executable: preserve the default icon.
+    NSImage *source = [[NSImage alloc] initWithContentsOfFile:path];
+    if (!source)
+      return;
+    if (machineIconIndex == 0) {
+      [[NSApplication sharedApplication] setApplicationIconImage:source];
+    }
+    else {
+      // The original 32x32 retro icons should remain pixel-sharp in Dock,
+      // not blurred by the normal high-DPI interpolation.
+      NSSize size = NSMakeSize(256.0, 256.0);
+      NSImage *dockImage = [[NSImage alloc] initWithSize:size];
+      [dockImage lockFocus];
+      [[NSGraphicsContext currentContext]
+          setImageInterpolation:NSImageInterpolationNone];
+      [source drawInRect:NSMakeRect(0.0, 0.0, size.width, size.height)
+               fromRect:NSZeroRect
+              operation:NSCompositingOperationCopy fraction:1.0];
+      [dockImage unlockFocus];
+      [[NSApplication sharedApplication] setApplicationIconImage:dockImage];
+      [dockImage release];
+    }
+    [source release];
+  }
+}
+
 // Prepare CoreAudio/NSSound BEFORE the guest VM starts. The first
 // NSSound play can spend >1s opening CoreAudio and displace the startup
 // click into the next program header; subsequent plays are much faster.

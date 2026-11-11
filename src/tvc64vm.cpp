@@ -347,11 +347,16 @@ namespace TVC64 {
       return;
     }
     n = n & 0x0F;
+    if (vm.rewindRenderMode && vm.fileIOEnabled &&
+        !vm.isRecordingDemo && !vm.isPlayingDemo)
+      throw Ep128Emu::Exception("Rewind TVC host FILE: replay blocked");
     if ((!vm.fileIOEnabled) | vm.isRecordingDemo | vm.isPlayingDemo) {
       // file I/O is disabled while recording or playing demo
       R.AF.B.h = (n > 0 ? 0xFF : 0x00);
       return;
     }
+    // Every active TVC FILE: operation is a non-reversible host boundary.
+    vm.rewindHostIOEpoch++;
     if (n >= 3 && n <= 9 && !fileIOFile) {
       R.AF.B.h = 0xE9;          // file not open
       if (n == 5) {
@@ -1323,6 +1328,8 @@ namespace TVC64 {
       isPlayingDemo(false),
       snapshotLoadFlag(false),
       rewindRestoreMode(false),
+      rewindRenderMode(false),
+      rewindHostIOEpoch(0U),
       demoTimeCnt(0UL),
       vtdosROMPage(0),
       breakPointPriorityThreshold(0),
@@ -1624,6 +1631,7 @@ namespace TVC64 {
     if (n < 0 || n > 8)
 #endif
       throw Ep128Emu::Exception("invalid disk drive number");
+    ++rewindHostIOEpoch;  // host medium changed; invalidate past/future
     if (n < 4) {
       if (&(wd177x.getFloppyDrive()) == &(floppyDrives[n])) {
         wd177x.setFloppyDrive((Ep128Emu::FloppyDrive *) 0);
@@ -1657,6 +1665,7 @@ namespace TVC64 {
 
   void TVC64VM::setTapeFileName(const std::string& fileName)
   {
+    ++rewindHostIOEpoch;  // new host tape/cursor invalidates past and future
     Ep128Emu::VirtualMachine::setTapeFileName(fileName);
     if (haveTape()) {
       tapeSamplesPerCRTCCycle =
@@ -1667,6 +1676,7 @@ namespace TVC64 {
 
   void TVC64VM::tapePlay()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapePlay();
     if (haveTape() && getIsTapeMotorOn() && getTapeButtonState() != 0)
       stopDemo();
@@ -1674,6 +1684,7 @@ namespace TVC64 {
 
   void TVC64VM::tapeRecord()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeRecord();
     if (haveTape() && getIsTapeMotorOn() && getTapeButtonState() != 0)
       stopDemo();
@@ -1681,11 +1692,13 @@ namespace TVC64 {
 
   void TVC64VM::tapeStop()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeStop();
   }
 
   void TVC64VM::tapeSeek(double t)
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeSeek(t);
   }
 

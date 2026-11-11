@@ -69,6 +69,7 @@ namespace Ep128Emu {
       {
         return dataSize;
       }
+      inline size_t getAllocatedCapacity() const { return allocSize; }
       inline const unsigned char * getData() const
       {
         return buf;
@@ -157,6 +158,10 @@ namespace Ep128Emu {
     inline size_t getBufferDataSize() const
     {
       return buf.getDataSize();
+    }
+    inline size_t getBufferAllocatedCapacity() const
+    {
+      return buf.getAllocatedCapacity();
     }
     inline const unsigned char *getBufferData() const
     {

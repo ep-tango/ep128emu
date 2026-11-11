@@ -47,6 +47,72 @@ namespace Ep128Emu {
   {
   }
 
+  bool WD177x::getRewindIdleState(RewindIdleState& out,
+                                   const FloppyDrive* drives,
+                                   int count) const
+  {
+    if ((statusRegister & 1U) || dataRequestFlag ||
+        floppyDrive->isDataTransfer())
+      return false;
+    int selected = -1;
+    if (floppyDrive != &dummyFloppyDrive) {
+      for (int i = 0; i < count; ++i)
+        if (floppyDrive == &drives[i]) { selected = i; break; }
+      if (selected < 0)
+        return false;
+    }
+    out.selectedDrive = selected;
+    out.command = commandRegister;
+    out.status = statusRegister;
+    out.track = trackRegister;
+    out.sector = sectorRegister;
+    out.data = dataRegister;
+    out.irq = interruptRequestFlag;
+    out.drq = dataRequestFlag;
+    out.isWD1773 = isWD1773;
+    out.steppingIn = steppingIn;
+    out.busyFlagHackEnabled = busyFlagHackEnabled;
+    out.busyFlagHack = busyFlagHack;
+    out.writeTrackSectorsRemaining = writeTrackSectorsRemaining;
+    out.writeTrackState = writeTrackState;
+    return true;
+  }
+
+  bool WD177x::canRestoreRewindIdleState(
+      const RewindIdleState& s, const FloppyDrive* drives, int count) const
+  {
+    return (count >= 0 && s.selectedDrive >= -1 &&
+            s.selectedDrive < count &&
+            (statusRegister & 1U) == 0U && !dataRequestFlag &&
+            !floppyDrive->isDataTransfer() &&
+            (s.status & 1U) == 0U && !s.drq);
+  }
+
+  bool WD177x::restoreRewindIdleState(
+      const RewindIdleState& s, FloppyDrive* drives, int count)
+  {
+    if (!canRestoreRewindIdleState(s, drives, count))
+      return false;
+    // Side-effect-free: setFloppyDrive() would call setError() on an active
+    // command and is deliberately not used during a historical restore.
+    floppyDrive = (s.selectedDrive < 0 ? &dummyFloppyDrive :
+                   &drives[s.selectedDrive]);
+    commandRegister = s.command;
+    statusRegister = s.status;
+    trackRegister = s.track;
+    sectorRegister = s.sector;
+    dataRegister = s.data;
+    interruptRequestFlag = s.irq;
+    dataRequestFlag = s.drq;
+    isWD1773 = s.isWD1773;
+    steppingIn = s.steppingIn;
+    busyFlagHackEnabled = s.busyFlagHackEnabled;
+    busyFlagHack = s.busyFlagHack;
+    writeTrackSectorsRemaining = s.writeTrackSectorsRemaining;
+    writeTrackState = s.writeTrackState;
+    return true;
+  }
+
   void WD177x::setFloppyDrive(FloppyDrive *d)
   {
     if (!d)

@@ -151,6 +151,8 @@ namespace CPC464 {
     // keyboard state will be cleared
     bool      snapshotLoadFlag;
     bool      rewindRestoreMode;
+    bool      rewindRenderMode;
+    uint64_t  rewindHostIOEpoch;
     // used for counting time between demo events (in CRTC cycles)
     uint64_t  demoTimeCnt;
     FDC765_CPC  *floppyDrive;
@@ -471,6 +473,8 @@ namespace CPC464 {
      */
     virtual bool getIsPlayingDemo() const;
     virtual bool getIsRewindRestoreSupported() const;
+    virtual uint64_t getRewindHostIOEpoch() const;
+    virtual void setRewindRenderMode(bool enabled);
     virtual bool getRewindRuntimeState(
         Ep128Emu::VirtualMachine::RewindRuntimeState& state) const;
     virtual bool restoreRewindRuntimeState(

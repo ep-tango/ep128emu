@@ -207,6 +207,81 @@ namespace Ep128Emu {
     return (*this);
   }
 
+  void FLTKDisplay_::serializeRewindProducerFrame_(
+      std::vector<unsigned char>& out) const
+  {
+    out.clear();
+    size_t totalBytes = 0;
+    for (size_t n = 0; n < 578; n++) {
+      if (!rewindProducerLines[n].empty())
+        totalBytes += 4 + rewindProducerLines[n].size();
+    }
+    out.reserve(totalBytes);
+    for (size_t n = 0; n < 578; n++) {
+      const std::vector<unsigned char>& line = rewindProducerLines[n];
+      if (line.empty())
+        continue;
+      size_t len = line.size();
+      out.push_back((unsigned char) (n & 0xFFU));
+      out.push_back((unsigned char) ((n >> 8) & 0xFFU));
+      out.push_back((unsigned char) (len & 0xFFU));
+      out.push_back((unsigned char) ((len >> 8) & 0xFFU));
+      out.insert(out.end(), line.begin(), line.end());
+    }
+  }
+
+  bool FLTKDisplay_::restoreRewindProducerFrame_(
+      const std::vector<unsigned char>& in)
+  {
+    for (size_t n = 0; n < 578; n++)
+      rewindProducerLines[n].clear();
+    size_t p = 0;
+    while (p < in.size()) {
+      if ((in.size() - p) < 4)
+        return false;
+      size_t lineNum = size_t(in[p]) | (size_t(in[p + 1]) << 8);
+      size_t len = size_t(in[p + 2]) | (size_t(in[p + 3]) << 8);
+      p += 4;
+      if (lineNum >= 578 || len < 1 || len > 432 || len > (in.size() - p))
+        return false;
+      rewindProducerLines[lineNum].assign(in.begin() + p, in.begin() + p + len);
+      p += len;
+    }
+    return true;
+  }
+
+  bool FLTKDisplay_::queueRewindFrame_(
+      const std::vector<unsigned char>& in)
+  {
+    size_t p = 0;
+    while (p < in.size()) {
+      if ((in.size() - p) < 4)
+        return false;
+      size_t lineNum = size_t(in[p]) | (size_t(in[p + 1]) << 8);
+      size_t len = size_t(in[p + 2]) | (size_t(in[p + 3]) << 8);
+      p += 4;
+      if (lineNum >= 578 || len < 1 || len > 432 || len > (in.size() - p))
+        return false;
+      p += len;
+    }
+
+    p = 0;
+    while (p < in.size()) {
+      size_t lineNum = size_t(in[p]) | (size_t(in[p + 1]) << 8);
+      size_t len = size_t(in[p + 2]) | (size_t(in[p + 3]) << 8);
+      p += 4;
+      Message_LineData *m = allocateMessage<Message_LineData>();
+      m->lineNum = int(lineNum);
+      m->copyLine(&(in[p]), len);
+      queueMessage(m);
+      p += len;
+    }
+    Message_FrameDone *f = allocateMessage<Message_FrameDone>();
+    queueMessage(f);
+    notifyFrameDone();
+    return true;
+  }
+
   void FLTKDisplay_::deleteMessage(Message *m)
   {
     messageQueueMutex.lock();
@@ -248,6 +323,9 @@ namespace Ep128Emu {
       freeMessageStack((Message *) 0),
       messageQueueMutex(),
       lineBuffers((Message_LineData **) 0),
+      rewindProducerLastLineNum(-2),
+      rewindProducerPrvFrameWasOdd(false),
+      rewindFrameCaptureEnabled(false),
       curLine(0),
       vsyncCnt(0),
       framesPending(0),
@@ -328,12 +406,30 @@ namespace Ep128Emu {
     return savedDisplayParameters;
   }
 
+  void FLTKDisplay_::setRewindFrameCaptureEnabled(bool enabled)
+  {
+    if (enabled == rewindFrameCaptureEnabled)
+      return;
+    rewindFrameCaptureEnabled = enabled;
+    rewindLastCompleteFrame.clear();
+    for (size_t i = 0; i < 578; ++i)
+      rewindProducerLines[i].clear();
+    rewindProducerLastLineNum = -2;
+    rewindProducerPrvFrameWasOdd = false;
+  }
+
   bool FLTKDisplay_::getRewindState(RewindState& state) const
   {
     state.curLine = curLine;
     state.vsyncCnt = vsyncCnt;
     state.vsyncState = vsyncState;
     state.oddFrame = oddFrame;
+    if (rewindFrameCaptureEnabled && !rewindLastCompleteFrame.empty()) {
+      state.frameData = rewindLastCompleteFrame;
+      serializeRewindProducerFrame_(state.producerFrameData);
+    }
+    state.producerLastLineNum = rewindProducerLastLineNum;
+    state.producerPrvFrameWasOdd = rewindProducerPrvFrameWasOdd;
     state.valid = true;
     return true;
   }
@@ -348,8 +444,16 @@ namespace Ep128Emu {
     vsyncCnt = state.vsyncCnt;
     vsyncState = state.vsyncState;
     oddFrame = state.oddFrame;
+    if (!state.frameData.empty()) {
+      rewindProducerLastLineNum = state.producerLastLineNum;
+      rewindProducerPrvFrameWasOdd = state.producerPrvFrameWasOdd;
+      if (!restoreRewindProducerFrame_(state.producerFrameData))
+        return false;
+      rewindLastCompleteFrame = state.frameData;
+    }
     skippingFrame = false;
-    rewindDiscardUntilFrameBoundary = resetOutput;
+    rewindDiscardUntilFrameBoundary =
+        (resetOutput && state.frameData.empty());
 
     if (!resetOutput)
       return true;
@@ -379,6 +483,8 @@ namespace Ep128Emu {
     Message_SetParameters *p = allocateMessage<Message_SetParameters>();
     p->dp = savedDisplayParameters;
     queueMessage(p);
+    if (!state.frameData.empty() && !queueRewindFrame_(state.frameData))
+      return false;
     return true;
   }
 
@@ -394,6 +500,13 @@ namespace Ep128Emu {
 
   void FLTKDisplay_::drawLine(const uint8_t *buf, size_t nBytes)
   {
+    if (rewindFrameCaptureEnabled && curLine >= 0 && curLine < 578) {
+      const int lineNum = curLine;
+      rewindProducerLastLineNum = lineNum;
+      if ((lineNum & 1) == int(rewindProducerPrvFrameWasOdd))
+        rewindProducerLines[lineNum ^ 1].clear();
+      rewindProducerLines[lineNum].assign(buf, buf + nBytes);
+    }
     if (!skippingFrame && !rewindDiscardUntilFrameBoundary) {
       if (curLine >= 0 && curLine < 578) {
         Message_LineData  *m = allocateMessage<Message_LineData>();
@@ -431,6 +544,20 @@ namespace Ep128Emu {
 
   void FLTKDisplay_::frameDone()
   {
+    if (rewindFrameCaptureEnabled) {
+      int lastLine = rewindProducerLastLineNum;
+      rewindProducerPrvFrameWasOdd = bool(lastLine & 1);
+      rewindProducerLastLineNum = (lastLine & 1) - 2;
+      if (lastLine < 576) {
+        lastLine = lastLine | 1;
+        do {
+          ++lastLine;
+          if (lastLine >= 0 && lastLine < 578)
+            rewindProducerLines[lastLine].clear();
+        } while (lastLine < 577);
+      }
+      serializeRewindProducerFrame_(rewindLastCompleteFrame);
+    }
     notifyFrameDone();
     if (rewindDiscardUntilFrameBoundary) {
       // The rewind render anchor may start in the middle of a video frame.

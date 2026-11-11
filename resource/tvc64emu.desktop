@@ -5,4 +5,5 @@ Comment=Videoton TVC emulator
 Comment[hu]=Videoton TVC emulátor
 Exec=tvc64emu
 Icon=tvc64emu
+StartupWMClass=tvc64emu
 Categories=Game;Emulator;

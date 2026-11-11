@@ -125,7 +125,35 @@ namespace TVC64 {
 
   bool TVC64VM::getIsRewindRestoreSupported() const
   {
-    return true;
+    if (z80.hasOpenHostFile())
+      return false;
+    for (int i=0; i<4; i++) {
+      if (floppyDrives[i].haveDisk())
+        return false;
+    }
+    return !(haveTape() && getTapeButtonState() != 0 && getIsTapeMotorOn());
+  }
+
+  uint64_t TVC64VM::getRewindHostIOEpoch() const
+  {
+    return rewindHostIOEpoch;
+  }
+
+  void TVC64VM::setRewindRenderMode(bool enabled)
+  {
+    rewindRenderMode = enabled;
+  }
+
+  void TVC64VM::setWorkingDirectory(const std::string& dirName_)
+  {
+    Ep128Emu::VirtualMachine::setWorkingDirectory(dirName_);
+    ++rewindHostIOEpoch;
+  }
+
+  void TVC64VM::setEnableFileIO(bool enabled)
+  {
+    Ep128Emu::VirtualMachine::setEnableFileIO(enabled);
+    ++rewindHostIOEpoch;
   }
 
   bool TVC64VM::getRewindRuntimeState(

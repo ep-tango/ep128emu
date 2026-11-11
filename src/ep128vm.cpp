@@ -321,12 +321,21 @@ namespace Ep128 {
           (n = vm.readMemory(uint16_t(R.PC.W.l + 3), true)) < 0x10)) {
       return;
     }
+    if (vm.rewindRenderMode && vm.fileIOEnabled &&
+        !vm.isRecordingDemo && !vm.isPlayingDemo) {
+      throw Ep128Emu::Exception(
+          "Rewind reconstruction encountered host FILE: I/O; history discarded");
+    }
     if ((!vm.fileIOEnabled) | vm.isRecordingDemo | vm.isPlayingDemo) {
       // file I/O is disabled while recording or playing demo
       if (n != 0x0F)
         R.AF.B.h = uint8_t((n >= 0x01 && n <= 0x0B) ? 0xE7 : 0x00);
       return;
     }
+    // This sequence invalidates snapshots across every real FILE: operation,
+    // even when the guest receives an error or simply reads/seeks.
+    if (n >= 0x01 && n <= 0x0F)
+      vm.rewindHostIOEpoch++;
     std::map< uint8_t, std::FILE * >::iterator  i_ = fileChannels.end();
     if (n >= 0x01 && n <= 0x0B) {
       i_ = fileChannels.find(uint8_t(R.AF.B.h));
@@ -838,7 +847,7 @@ namespace Ep128 {
     // the printer sees the active-going strobe. Ignore repeated writes.
     bool active = ((value & 0x10U) != 0U);
     if (active && !printerStrobeActive && printerCaptureEnabled &&
-        !rewindRestoreMode && !isPlayingDemo) {
+        !rewindRestoreMode && !rewindRenderMode && !isPlayingDemo) {
       if (printerOutputQueue.size() < printerQueueLimit)
         printerOutputQueue.push_back(printerDataLatch);
       else
@@ -1720,6 +1729,8 @@ namespace Ep128 {
       isPlayingDemo(false),
       snapshotLoadFlag(false),
       rewindRestoreMode(false),
+      rewindRenderMode(false),
+      rewindHostIOEpoch(0U),
       demoTimeCnt(0U),
       breakPointPriorityThreshold(0),
       cmosMemoryRegisterSelect(0xFF),
@@ -1774,6 +1785,8 @@ namespace Ep128 {
       callbacks[i].userData = (void *) 0;
       callbacks[i].nxt = (Ep128VMCallback *) 0;
     }
+    for (size_t i = 0; i < 5; ++i)
+      rewindAuxMediaMounted[i] = false;
     for (size_t i = 0; i < 4; i++) {
       pageTable[i] = 0x00;
       spectrumEmulatorIOPorts[i] = 0xFF;
@@ -1934,6 +1947,13 @@ namespace Ep128 {
   {
     stopDemoPlayback();         // TODO: should be recorded as an event ?
     stopDemoRecording(false);
+    // EXOS loses its live FILE: channel table across CPU reset. Do not keep
+    // host FILE* cursors from the old program, or rewind will remain disabled
+    // despite the guest no longer owning those channels.
+    if (z80.hasOpenFiles()) {
+      z80.closeAllFiles();
+      ++rewindHostIOEpoch;
+    }
     z80.reset();
     ioPorts.reset();
     for (uint16_t i = 0x00A0; i <= 0x00BF; i++)
@@ -2321,6 +2341,9 @@ namespace Ep128 {
     if (n < 0 || n > 8)
 #endif
       throw Ep128Emu::Exception("invalid disk drive number");
+    // Mount and eject change external host I/O ownership. Old snapshots
+    // must not become rewindable simply because the medium was removed.
+    ++rewindHostIOEpoch;
     if (n < 4) {
       if (&(wd177x.getFloppyDrive()) == &(floppyDrives[n])) {
         wd177x.setFloppyDrive((Ep128Emu::FloppyDrive *) 0);
@@ -2334,11 +2357,13 @@ namespace Ep128 {
     else if (n >= 8) {
       stopDemo();
       sdext.openImage(fileName_.c_str());
+      rewindAuxMediaMounted[4] = !fileName_.empty();
       return;
     }
 #endif
     else {
       ideInterface->setImageFile(n & 3, fileName_.c_str());
+      rewindAuxMediaMounted[n & 3] = !fileName_.empty();
     }
   }
 
@@ -2357,6 +2382,7 @@ namespace Ep128 {
 
   void Ep128VM::setTapeFileName(const std::string& fileName)
   {
+    ++rewindHostIOEpoch;  // new host tape/cursor invalidates past and future
     Ep128Emu::VirtualMachine::setTapeFileName(fileName);
     cancelPendingTapeRelayRelease();
     setTapeMotorState(bool(remoteControlState));
@@ -2400,6 +2426,7 @@ namespace Ep128 {
 
   void Ep128VM::tapePlay()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapePlay();
     if (haveTape() && getIsTapeMotorOn() && getTapeButtonState() != 0)
       stopDemo();
@@ -2407,12 +2434,25 @@ namespace Ep128 {
 
   void Ep128VM::tapeRecord()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeRecord();
     // The trial models the playback lead-in. Do not discard live samples
     // from tape recording (or a record operation started during spin-up).
     tapeSpinUpSamplesRemaining = 0U;
     if (haveTape() && getIsTapeMotorOn() && getTapeButtonState() != 0)
       stopDemo();
+  }
+
+  void Ep128VM::tapeStop()
+  {
+    ++rewindHostIOEpoch;
+    Ep128Emu::VirtualMachine::tapeStop();
+  }
+
+  void Ep128VM::tapeSeek(double t)
+  {
+    ++rewindHostIOEpoch;
+    Ep128Emu::VirtualMachine::tapeSeek(t);
   }
 
   void Ep128VM::setBreakPoint(const Ep128Emu::BreakPoint& bp, bool isEnabled)

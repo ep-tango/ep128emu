@@ -104,7 +104,30 @@ namespace ZX128 {
 
   bool ZX128VM::getIsRewindRestoreSupported() const
   {
-    return !speccyDOS && !betaDisk;
+    return !speccyDOS && !betaDisk && !z80.hasOpenHostTapeFile()
+           && !(haveTape() && getTapeButtonState() != 0 && getIsTapeMotorOn());
+  }
+
+  uint64_t ZX128VM::getRewindHostIOEpoch() const
+  {
+    return rewindHostIOEpoch;
+  }
+
+  void ZX128VM::setRewindRenderMode(bool enabled)
+  {
+    rewindRenderMode = enabled;
+  }
+
+  void ZX128VM::setWorkingDirectory(const std::string& dirName_)
+  {
+    Ep128Emu::VirtualMachine::setWorkingDirectory(dirName_);
+    ++rewindHostIOEpoch;
+  }
+
+  void ZX128VM::setEnableFileIO(bool enabled)
+  {
+    Ep128Emu::VirtualMachine::setEnableFileIO(enabled);
+    ++rewindHostIOEpoch;
   }
 
   bool ZX128VM::getRewindRuntimeState(

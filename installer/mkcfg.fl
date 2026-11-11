@@ -17,6 +17,8 @@ class Ep128EmuConfigInstallerGUI {open
   }
   decl {bool enableROMDownload;} {public local
   }
+  decl {bool preserveExistingROMs;} {public local
+  }
   decl {bool keyboardMapHU;} {public local
   }
   decl {bool okButtonPressed;} {public local
@@ -33,6 +35,7 @@ class Ep128EmuConfigInstallerGUI {open
   enablePresetCfgInstall = true;
   enableCfgInstall = false;
   enableROMDownload = false;
+  preserveExistingROMs = false;
   keyboardMapHU = false;
   okButtonPressed = false;
   cancelButtonPressed = false;
@@ -45,7 +48,7 @@ class Ep128EmuConfigInstallerGUI {open
 }} open
       xywh {81 72 370 170} type Double color 48 visible
     } {
-      Fl_Check_Button {} {
+      Fl_Check_Button presetCfgValuator {
         callback {{
   enablePresetCfgInstall = (o->value() != 0);
 }}

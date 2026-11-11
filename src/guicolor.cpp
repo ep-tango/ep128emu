@@ -42,6 +42,7 @@
 
 #include <windows.h>
 #include <FL/x.H>
+#include "win_taskbar_identity.hpp"
 
 static const char *windowClassTable[14] = {
   "EPMainWindow",
@@ -412,6 +413,15 @@ namespace Ep128Emu {
     }
     w->icon(reinterpret_cast<char *>(iconHandle));
 #elif defined(HAVE_FLTK_1_3_3)
+#ifdef __linux__
+    // Match StartupWMClass of the four installed XDG launchers.
+    // This is set before the window is first mapped, not changed mid-frame.
+    static const char * const machineClass[4] = {
+      "ep128emu", "zx128emu", "cpc464emu", "tvc64emu"
+    };
+    if (iconNum >= 0 && iconNum < 4)
+      w->xclass(machineClass[iconNum]);
+#endif
     if (iconNum >= 0 &&
         size_t(iconNum)
         < (sizeof(iconPixmapData) / sizeof(const char * const *))) {
@@ -437,6 +447,39 @@ namespace Ep128Emu {
     (void) iconNum;
 #endif
   }
+
+#ifdef WIN32
+  void setWindowsTaskbarMachineIcon(Fl_Window *w, int iconNum)
+  {
+    if (!w || !w->shown() || iconNum < 0 || iconNum > 3)
+      return;
+    HWND hwnd = (HWND) fl_xid(w);
+    if (!hwnd)
+      return;
+    HINSTANCE module = GetModuleHandleW((LPCWSTR) 0);
+    if (!module)
+      return;
+    // The same 101..104 resource IDs already power the FLTK window icons.
+    // Explicitly update the realized HWND, not the immutable .exe icon:
+    // on Windows taskbar/Alt-Tab the latter may otherwise win the fallback.
+    HICON large = (HICON) LoadImageW(
+        module, MAKEINTRESOURCEW(iconNum + 101), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
+        LR_DEFAULTCOLOR | LR_SHARED);
+    HICON small = (HICON) LoadImageW(
+        module, MAKEINTRESOURCEW(iconNum + 101), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR | LR_SHARED);
+    if (large)
+      SendMessageW(hwnd, WM_SETICON, ICON_BIG, (LPARAM) large);
+    if (small)
+      SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM) small);
+    // WM_SETICON only affects window chrome. Explorer can instead show the
+    // pinned shortcut or the process default EP icon in the taskbar group.
+    // Assign the specific VM AppUserModelID plus the real PE icon resource.
+    (void) Ep128EmuWinTaskbar::setMachineIdentity(hwnd, iconNum);
+  }
+#endif
 
 }       // namespace Ep128Emu
 

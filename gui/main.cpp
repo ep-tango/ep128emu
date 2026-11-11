@@ -27,6 +27,8 @@
 #ifdef __APPLE__
 #  include "macos_activity.hpp"
 #  include "macos_about.hpp"
+#  include "macos_rom_relocation.hpp"
+#  include <FL/fl_ask.H>
 #  include <FL/Fl_Sys_Menu_Bar.H>
 #  include <mach-o/dyld.h>
 #  include <spawn.h>
@@ -43,6 +45,7 @@ extern char **environ;
 #ifdef WIN32
 #  include <windows.h>
 #  include "win_trial_paths.hpp"
+#  include "rom_archive_catalog.hpp"
 #else
 #  include <dirent.h>
 #endif
@@ -186,6 +189,10 @@ static bool restartAsWindowsMachine(int machineType, int loadType,
 #endif
 
 #ifdef WIN32
+// Implemented by gui/gui.cpp; a prompt is shown only for missing configured
+// ROM files, and external system files are never modified without approval.
+bool ep128emuOfferWindowsROMDownload();
+
 // T004: Migrate only provably missing paths from known historical trial
 // installations. Never rewrite existing user files or a custom location.
 // The original binary config is backed up before any automatic correction.
@@ -588,6 +595,9 @@ int main(int argc, char **argv)
 #endif
         );
     config->setErrorCallback(&cfgErrorFunc, (void *) 0);
+#ifdef __APPLE__
+    bool macInitialWizardShown = false;
+#endif
     // load base configuration (if available)
     {
       Ep128Emu::File  *f = (Ep128Emu::File *) 0;
@@ -625,7 +635,11 @@ int main(int argc, char **argv)
 #  ifndef __APPLE__
             cmdLine += "epmakecfg\" -c \"";
 #  else
-            cmdLine += "epmakecfg\" -f \"";
+            // Invoke the original interactive installer. -d PRESELECTS
+            // firmware download with a clear user opt-out; it never starts
+            // an unattended network operation or resets existing settings.
+            cmdLine += "epmakecfg\" -d \"";
+            macInitialWizardShown = true;
 #  endif
             cmdLine += baseDir;
             cmdLine += '"';
@@ -637,6 +651,9 @@ int main(int argc, char **argv)
 #ifndef WIN32
           config->registerChunkType(*f);
           f->processAllChunks();
+#ifdef __APPLE__
+          (void) Ep128EmuMacROM::repair(*config);
+#endif
           delete f;
           f = (Ep128Emu::File *) 0;
           if (makecfgDone)
@@ -667,6 +684,13 @@ int main(int argc, char **argv)
             else
               baseDir = Ep128Emu::getEp128EmuHomeDirectory();
           }
+#ifdef __APPLE__
+          // An existing saved config with missing firmware is NOT a reason
+          // to force-install defaults over user customizations. The GUI
+          // offers the explicit, ROM-only downloader for this condition.
+          if (makecfgNeeded)
+            break;
+#endif
           // invalid configuration, try running makecfg if not done yet
           delete config;
           config = (Ep128Emu::EmulatorConfiguration *) 0;
@@ -707,6 +731,11 @@ int main(int argc, char **argv)
         if (++i >= argc)
           throw Ep128Emu::Exception("missing configuration file name");
         config->loadState(argv[i], false);
+#ifdef __APPLE__
+        (void) Ep128EmuMacROM::repair(*config);
+        // The single recovery decision is made below after all command-line
+        // options have been applied, including machine switches via -cfg.
+#endif
       }
       else if (std::strcmp(argv[i], "-snapshot") == 0 ||
                std::strcmp(argv[i], "-loadfile") == 0 ||
@@ -758,6 +787,41 @@ int main(int argc, char **argv)
       userSpecifiedCfg = userSpecifiedCfg || (std::strcmp(argv[i], "-cfg") == 0);
     (void) repairKnownWindowsTrialConfiguration(
         *config, int(machineType), cfgFileName, !userSpecifiedCfg);
+    bool missingROM=false;
+    for (size_t i=0;i<68;++i) {
+      if (!config->memory.rom[i].file.empty()) {
+        std::FILE *rom=Ep128Emu::fileOpen(
+            config->memory.rom[i].file.c_str(), "rb");
+        if (!rom && Ep128EmuStandardROMs::providedByArchive(
+                     config->memory.rom[i].file)) { missingROM=true; break; }
+        if (rom)
+          std::fclose(rom);
+      }
+    }
+    if (missingROM)
+      (void) ep128emuOfferWindowsROMDownload();
+#endif
+#ifdef __APPLE__
+    // Covers both first-run profiles and old 2.3/2.4 profiles where config
+    // already exists but ROMs were never provisioned. Never reset the config.
+    // Only offer files actually present in the verified original archive.
+    // Do not re-prompt when the user has just seen the first-run wizard
+    // and intentionally declined or deselected the ROM download.
+    if (!macInitialWizardShown &&
+        (Ep128EmuMacROM::hasMissingDownloadableROM(*config) ||
+         Ep128EmuMacROM::hasIncompleteStandardROMPackage(
+             *config, Ep128Emu::getEp128EmuHomeDirectory()))) {
+      if (ep128emuOfferMacROMDownload())
+        (void) Ep128EmuMacROM::repair(*config);
+    }
+    // The upstream archive cannot supply every ROM expected by presets.
+    const std::string unavailableROM =
+        Ep128EmuMacROM::firstUnavailableMissingROM(*config);
+    if (!unavailableROM.empty())
+      fl_alert("Configuration requires unavailable ROM: %s\n"
+               "This file is not in the standard 72-ROM download.\n"
+               "Use a compatible preset or provide the missing ROM.",
+               unavailableROM.c_str());
 #endif
     config->applySettings();
 #ifdef __APPLE__

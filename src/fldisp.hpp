@@ -146,6 +146,9 @@ namespace Ep128Emu {
     void queueMessage(Message *m);
     static void decodeLine(unsigned char *outBuf,
                            const unsigned char *inBuf, size_t nBytes);
+    void serializeRewindProducerFrame_(std::vector<unsigned char>& out) const;
+    bool restoreRewindProducerFrame_(const std::vector<unsigned char>& in);
+    bool queueRewindFrame_(const std::vector<unsigned char>& in);
     void frameDone();
     void checkScreenshotCallback();
     virtual void resetRewindOutputBuffers();
@@ -156,6 +159,13 @@ namespace Ep128Emu {
     Mutex         messageQueueMutex;
     // for 578 lines (576 + 2 border)
     Message_LineData  **lineBuffers;
+    // Producer-side persistent frame mirror used by exact rewind. Each entry
+    // contains the already-compressed scanline payload for one physical line.
+    std::vector<unsigned char> rewindProducerLines[578];
+    std::vector<unsigned char> rewindLastCompleteFrame;
+    int           rewindProducerLastLineNum;
+    bool          rewindProducerPrvFrameWasOdd;
+    bool          rewindFrameCaptureEnabled;
     int           curLine;
     int           vsyncCnt;
     int           framesPending;
@@ -212,6 +222,7 @@ namespace Ep128Emu {
      * the current line (0 to 56).
      */
     virtual void vsyncStateChange(bool newState, unsigned int currentSlot_);
+    virtual void setRewindFrameCaptureEnabled(bool enabled);
     virtual bool getRewindState(RewindState& state) const;
     virtual bool restoreRewindState(const RewindState& state,
                                     bool resetOutput);

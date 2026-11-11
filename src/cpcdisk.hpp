@@ -132,6 +132,8 @@ namespace CPC464 {
     FDC765_CPC();
     virtual ~FDC765_CPC();
     virtual void openDiskImage(int n, const char *fileName);
+    // External media state cannot be reconstructed by CPC snapshots.
+    bool isDiskImageMounted(int n) const { return haveDisk(n); }
    protected:
     virtual bool haveDisk(int driveNum) const;
     virtual bool getIsTrack0(int driveNum) const;

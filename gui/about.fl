@@ -35,7 +35,9 @@ class Ep128EmuGUI_AboutWindow {open
       }
     }
     code {{
-  buf->append("                     ep128emu version 2.1\\n");
+  buf->append("                     ep128emu version ");
+  buf->append(EP128EMU_CUSTOM_VERSION);
+  buf->append("\\n");
   buf->append("\\n");
   buf->append("Portable Enterprise 128 emulator\\n");
   buf->append("Copyright \\302\\251 2003-2017 Istvan Varga <istvanv@users.sourceforge.net>\\n");

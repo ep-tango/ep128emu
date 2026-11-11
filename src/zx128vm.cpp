@@ -416,6 +416,9 @@ namespace ZX128 {
         | (!vm.fileIOEnabled) | vm.haveTape()) {
       return;
     }
+    if (vm.rewindRenderMode)
+      throw Ep128Emu::Exception("Rewind Spectrum host tape I/O blocked");
+    ++vm.rewindHostIOEpoch;
     R.PC.W.l = 0x0604;                  // address of RET from routine
     R.AF.B.l = R.AF.B.l & 0xBE;         // clear Z and C flags for STOP/error
     if (!tapFile) {
@@ -491,8 +494,10 @@ namespace ZX128 {
     tapeLeaderCnt = 0;
     tapeShiftRegCnt = 0;
     tapeShiftReg = 0x00;
-    if (tapFile)
+    if (tapFile) {
       std::fseek(tapFile, 0L, SEEK_SET);
+      ++vm.rewindHostIOEpoch;
+    }
   }
 
   void ZX128VM::Z80_::closeTapeFile()
@@ -504,6 +509,7 @@ namespace ZX128 {
     if (tapFile) {
       std::fclose(tapFile);
       tapFile = (std::FILE *) 0;
+      ++vm.rewindHostIOEpoch;
     }
   }
 
@@ -994,6 +1000,8 @@ namespace ZX128 {
       isPlayingDemo(false),
       snapshotLoadFlag(false),
       rewindRestoreMode(false),
+      rewindRenderMode(false),
+      rewindHostIOEpoch(0U),
       demoTimeCnt(0UL),
       breakPointPriorityThreshold(0),
       firstCallback((ZX128VMCallback *) 0),
@@ -1304,6 +1312,7 @@ namespace ZX128 {
 
   void ZX128VM::setTapeFileName(const std::string& fileName)
   {
+    ++rewindHostIOEpoch;  // new host tape/cursor invalidates past and future
     Ep128Emu::VirtualMachine::setTapeFileName(fileName);
     if (haveTape()) {
       setTapeMotorState(true);
@@ -1319,6 +1328,7 @@ namespace ZX128 {
 
   void ZX128VM::tapePlay()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapePlay();
     if (haveTape() && getTapeButtonState() != 0)
       stopDemo();
@@ -1326,6 +1336,7 @@ namespace ZX128 {
 
   void ZX128VM::tapeRecord()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeRecord();
     if (haveTape() && getTapeButtonState() != 0)
       stopDemo();
@@ -1333,12 +1344,14 @@ namespace ZX128 {
 
   void ZX128VM::tapeStop()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeStop();
     z80.closeTapeFile();
   }
 
   void ZX128VM::tapeSeek(double t)
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeSeek(t);
     if (t <= 0.0)
       z80.rewindTapeFile();

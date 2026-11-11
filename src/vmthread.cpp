@@ -71,12 +71,18 @@ namespace Ep128Emu {
       queuedFileIODirectory("."),
       queuedFileIOEnabled(false),
       queuedFileIODefaultDevice(false),
+      queuedFileIOGeneration(0ULL),
       rewindHistoryBytes(0),
+      rewindDeltaAllocatedBytes(0),
       rewindHistoryLimitBytes(size_t(16) * 1024 * 1024),
       rewindFramesAvailable(0),
       rewindTimelineStatus((uint64_t(1) << 32) | uint64_t(1)),
       rewindBufferUsageBytes(0),
+      rewindAllocatedUsageBytes(0),
       rewindLastFrameSequence(0ULL),
+      rewindLastHostIOEpoch(0ULL),
+      rewindDemoGuardActive(false),
+      rewindBlockedReason(0U),
       rewindFrameRequests(0U),
       rewindJumpRequest(0),
       rewindCaptureEnabled(true),
@@ -99,6 +105,7 @@ namespace Ep128Emu {
       keyboardState[i] = false;
     rewindLastFrameSequence =
         vm.getVideoDisplay().getFrameSequenceNumber();
+    rewindLastHostIOEpoch = vm.getRewindHostIOEpoch();
 
     this->start();
   }
@@ -173,6 +180,169 @@ namespace Ep128Emu {
     b.push_back((unsigned char) (n & 0xFFU));
   }
 
+  static size_t rewindDisplayPayloadBytes_(
+      const VideoDisplay::RewindState& s)
+  {
+    return s.frameData.size() + s.producerFrameData.size();
+  }
+
+  static size_t rewindDisplayAllocatedBytes_(
+      const VideoDisplay::RewindState& s)
+  {
+    return s.frameData.capacity() + s.producerFrameData.capacity();
+  }
+
+  // Reversible video data uses a bounded, lossless XOR representation.
+  static unsigned char rewindXorVideoByte_(
+      const std::vector<unsigned char>& a,
+      const std::vector<unsigned char>& b, size_t i)
+  {
+    return (i < a.size() ? a[i] : 0U) ^ (i < b.size() ? b[i] : 0U);
+  }
+
+  // Lossless XOR spans, bounded to one host-video frame.
+  bool VMThread::rewindEncodeVideoXor_(std::vector<unsigned char>& out,
+      const std::vector<unsigned char>& target,
+      const std::vector<unsigned char>& adjacent)
+  {
+    const size_t limit = 1024U * 1024U;
+    if (target.size() > limit || adjacent.size() > limit)
+      return false;
+    const size_t n = std::max(target.size(), adjacent.size());
+    out.clear();
+    out.push_back(1U);
+    rewindPutUInt32(out, uint32_t(target.size()));
+    rewindPutUInt32(out, uint32_t(adjacent.size()));
+    size_t i = 0U;
+    while (i < n) {
+      while (i < n && rewindXorVideoByte_(target, adjacent, i) == 0U)
+        ++i;
+      if (i == n)
+        break;
+      const size_t start = i;
+      size_t last = i;
+      while (++i < n) {
+        if (rewindXorVideoByte_(target, adjacent, i) != 0U)
+          last = i;
+        else if (i - last > 8U)
+          break;
+      }
+      const size_t len = last - start + 1U;
+      rewindPutUInt32(out, uint32_t(start));
+      rewindPutUInt32(out, uint32_t(len));
+      for (size_t k = 0U; k < len; ++k)
+        out.push_back(rewindXorVideoByte_(target, adjacent, start + k));
+    }
+    if (out.size() >= n + 9U) {
+      out.resize(n + 9U);
+      out[0] = 0U;
+      for (size_t k = 0U; k < n; ++k)
+        out[k + 9U] = rewindXorVideoByte_(target, adjacent, k);
+    }
+    return true;
+  }
+
+  bool VMThread::rewindDecodeVideoXor_(std::vector<unsigned char>& out,
+      const std::vector<unsigned char>& code,
+      const std::vector<unsigned char>& adjacent)
+  {
+    if (code.size() < 9U || code[0] > 1U)
+      return false;
+    const size_t targetSize = size_t(rewindGetUInt32(&code[1]));
+    const size_t baseSize = size_t(rewindGetUInt32(&code[5]));
+    if (targetSize > 1024U * 1024U || baseSize > 1024U * 1024U
+        || baseSize != adjacent.size())
+      return false;
+    const size_t n = std::max(targetSize, baseSize);
+    std::vector<unsigned char> decoded(n, 0U);
+    std::copy(adjacent.begin(), adjacent.end(), decoded.begin());
+    if (code[0] == 0U) {
+      if (code.size() != n + 9U)
+        return false;
+      for (size_t i = 0U; i < n; ++i)
+        decoded[i] ^= code[9U + i];
+    }
+    else {
+      size_t p = 9U, previousEnd = 0U;
+      while (p < code.size()) {
+        if (code.size() - p < 8U)
+          return false;
+        const size_t start = size_t(rewindGetUInt32(&code[p]));
+        const size_t len = size_t(rewindGetUInt32(&code[p + 4U]));
+        p += 8U;
+        if (len == 0U || start < previousEnd || start > n
+            || len > n - start || len > code.size() - p)
+          return false;
+        for (size_t j = 0U; j < len; ++j)
+          decoded[start + j] ^= code[p + j];
+        p += len;
+        previousEnd = start + len;
+      }
+    }
+    for (size_t i = targetSize; i < n; ++i)
+      if (decoded[i] != 0U)
+        return false;
+    out.assign(decoded.begin(), decoded.begin() + targetSize);
+    return true;
+  }
+
+  void VMThread::rewindStoreDisplayDelta_(RewindDelta& d,
+      const VideoDisplay::RewindState& target,
+      const VideoDisplay::RewindState& adjacent)
+  {
+    d.displayState = target;
+    d.videoEncoded = false;
+    if (target.frameData.empty() || adjacent.frameData.empty())
+      return;
+    if (!rewindEncodeVideoXor_(d.frameXor, target.frameData,
+                               adjacent.frameData)
+        || !rewindEncodeVideoXor_(d.producerXor, target.producerFrameData,
+                                  adjacent.producerFrameData)) {
+      d.frameXor.clear();
+      d.producerXor.clear();
+      return;
+    }
+    d.videoEncoded = true;
+    std::vector<unsigned char>().swap(d.displayState.frameData);
+    std::vector<unsigned char>().swap(d.displayState.producerFrameData);
+  }
+
+  bool VMThread::rewindLoadDisplayDelta_(VideoDisplay::RewindState& out,
+      const RewindDelta& d, const VideoDisplay::RewindState& adjacent)
+  {
+    out = d.displayState;
+    if (!d.videoEncoded)
+      return true;
+    return rewindDecodeVideoXor_(out.frameData, d.frameXor,
+                                 adjacent.frameData)
+           && rewindDecodeVideoXor_(out.producerFrameData, d.producerXor,
+                                    adjacent.producerFrameData);
+  }
+
+  size_t VMThread::rewindDeltaVideoBytes_(const RewindDelta& d)
+  {
+    return rewindDisplayPayloadBytes_(d.displayState)
+           + d.frameXor.size() + d.producerXor.size();
+  }
+
+  size_t VMThread::rewindDeltaCapacity_(const RewindDelta& d)
+  {
+    return d.data.capacity() + d.runtimeState.machineData.capacity()
+           + rewindDisplayAllocatedBytes_(d.displayState)
+           + d.frameXor.capacity() + d.producerXor.capacity();
+  }
+
+  size_t VMThread::rewindEstimatedAllocatedBytes_() const
+  {
+    // Rewind-retained heap estimate, not whole-process RSS.
+    return rewindDeltaAllocatedBytes + rewindCurrentState.capacity()
+           + rewindCurrentRuntimeState.machineData.capacity()
+           + rewindDisplayAllocatedBytes_(rewindCurrentDisplayState)
+           + rewindCaptureFile.getBufferAllocatedCapacity()
+           + rewindHistory.size() * sizeof(RewindDelta)
+           + rewindForwardHistory.capacity() * sizeof(RewindDelta);
+  }
+
   void VMThread::rewindUpdateTimelineStatus_()
   {
     // Publish position and length as one atomic value so the GUI can never
@@ -186,9 +356,13 @@ namespace Ep128Emu {
     const uint64_t length = position + future;
     rewindTimelineStatus =
         ((length & 0xFFFFFFFFULL) << 32) | (position & 0xFFFFFFFFULL);
+    // Payload size only; allocated vector capacity, container overhead
+    // and transient copies are not represented. This is NOT process RSS.
     rewindBufferUsageBytes =
         rewindHistoryBytes + rewindCurrentState.size()
-        + rewindCurrentRuntimeState.machineData.size();
+        + rewindCurrentRuntimeState.machineData.size()
+        + rewindDisplayPayloadBytes_(rewindCurrentDisplayState);
+    rewindAllocatedUsageBytes = rewindEstimatedAllocatedBytes_();
   }
 
   void VMThread::rewindTrimToLimit_()
@@ -198,11 +372,12 @@ namespace Ep128Emu {
     // future + current state alone exceeds a newly lowered limit, usage can
     // temporarily remain above the cap until Resume/branch clears the future.
     while (rewindHistory.size() > 2
-           && (rewindHistoryBytes + rewindCurrentState.size()
-               + rewindCurrentRuntimeState.machineData.size())
-                  > rewindHistoryLimitBytes) {
+           && rewindEstimatedAllocatedBytes_() > rewindHistoryLimitBytes) {
       rewindHistoryBytes -= rewindHistory.front().data.size();
       rewindHistoryBytes -= rewindHistory.front().runtimeState.machineData.size();
+      rewindHistoryBytes -= rewindDeltaVideoBytes_(rewindHistory.front());
+      rewindDeltaAllocatedBytes -=
+          rewindDeltaCapacity_(rewindHistory.front());
       rewindHistory.pop_front();
     }
     rewindFramesAvailable =
@@ -216,8 +391,11 @@ namespace Ep128Emu {
       RewindDelta& d = rewindForwardHistory.back();
       rewindHistoryBytes -= d.data.size();
       rewindHistoryBytes -= d.runtimeState.machineData.size();
+      rewindHistoryBytes -= rewindDeltaVideoBytes_(d);
+      rewindDeltaAllocatedBytes -= rewindDeltaCapacity_(d);
       rewindForwardHistory.pop_back();
     }
+    std::vector<RewindDelta>().swap(rewindForwardHistory);
     rewindUpdateTimelineStatus_();
   }
 
@@ -229,6 +407,10 @@ namespace Ep128Emu {
     rewindCurrentDisplayState = VideoDisplay::RewindState();
     rewindCurrentRuntimeState = VirtualMachine::RewindRuntimeState();
     rewindHistoryBytes = 0;
+    rewindDeltaAllocatedBytes = 0;
+    std::deque<RewindDelta>().swap(rewindHistory);
+    std::vector<RewindDelta>().swap(rewindForwardHistory);
+    std::vector<unsigned char>().swap(rewindCurrentState);
     rewindFramesAvailable = 0;
     rewindUpdateTimelineStatus_();
     rewindFrameRequests = 0U;
@@ -236,6 +418,7 @@ namespace Ep128Emu {
     rewindInputReconcilePending = false;
     rewindLastFrameSequence =
         vm.getVideoDisplay().getFrameSequenceNumber();
+    rewindLastHostIOEpoch = vm.getRewindHostIOEpoch();
   }
 
   void VMThread::rewindEncodeDelta_(
@@ -320,7 +503,8 @@ namespace Ep128Emu {
 
   void VMThread::rewindCaptureFrame_()
   {
-    if (!rewindCaptureEnabled || !vm.getIsRewindRestoreSupported())
+    if (!rewindCaptureEnabled || !vm.getIsRewindRestoreSupported()
+        || rewindDemoGuardActive)
       return;
 
     if (vm.getIsRecordingDemo() || vm.getIsPlayingDemo()) {
@@ -333,9 +517,18 @@ namespace Ep128Emu {
     const size_t stateSize = rewindCaptureFile.getBufferDataSize();
     const unsigned char *stateData = rewindCaptureFile.getBufferData();
     VideoDisplay::RewindState displayState;
-    (void) vm.getVideoDisplay().getRewindState(displayState);
+    if (!vm.getVideoDisplay().getRewindState(displayState) ||
+        !displayState.valid ||
+        (vm.getIsRewindDirectFrameRequired() && displayState.frameData.empty())) {
+      rewindClearHistory_();
+      return;
+    }
     VirtualMachine::RewindRuntimeState runtimeState;
-    (void) vm.getRewindRuntimeState(runtimeState);
+    if (!vm.getRewindRuntimeState(runtimeState) || !runtimeState.valid) {
+      // Never publish a guest snapshot with a missing FDC checkpoint.
+      rewindClearHistory_();
+      return;
+    }
 
     if (rewindCurrentState.empty()) {
       rewindCurrentState.assign(stateData, stateData + stateSize);
@@ -356,14 +549,19 @@ namespace Ep128Emu {
     }
 
     RewindDelta d;
-    d.displayState = rewindCurrentDisplayState;
+    rewindStoreDisplayDelta_(d, rewindCurrentDisplayState, displayState);
     d.runtimeState = rewindCurrentRuntimeState;
     rewindEncodeDelta_(d.data, rewindCurrentState, stateData, stateSize);
-    rewindHistoryBytes += d.data.size() + d.runtimeState.machineData.size();
+    rewindHistoryBytes += d.data.size() + d.runtimeState.machineData.size()
+                          + rewindDeltaVideoBytes_(d);
     rewindHistory.push_back(RewindDelta());
     rewindHistory.back().data.swap(d.data);
     rewindHistory.back().displayState = d.displayState;
+    rewindHistory.back().frameXor.swap(d.frameXor);
+    rewindHistory.back().producerXor.swap(d.producerXor);
+    rewindHistory.back().videoEncoded = d.videoEncoded;
     rewindHistory.back().runtimeState = d.runtimeState;
+    rewindDeltaAllocatedBytes += rewindDeltaCapacity_(rewindHistory.back());
     rewindCurrentState.assign(stateData, stateData + stateSize);
     rewindCurrentDisplayState = displayState;
     rewindCurrentRuntimeState = runtimeState;
@@ -375,14 +573,33 @@ namespace Ep128Emu {
   {
     if (rewindHistory.size() < 3 || rewindCurrentState.empty())
       return false;
+    // Always revalidate the actual IMG path and write epoch immediately
+    // before touching historical state. External replacement while paused
+    // must never make an old frame restorable.
+    const uint64_t liveEpoch = vm.getRewindHostIOEpoch();
+    const bool mediaSafe = vm.getIsRewindRestoreSupported();
+    if (liveEpoch != rewindLastHostIOEpoch || !mediaSafe ||
+        vm.getIsRecordingDemo() || vm.getIsPlayingDemo()) {
+      rewindBlockedReason = (mediaSafe ? 0U
+                                  : vm.getRewindUnavailableReason());
+      rewindClearHistory_();
+      return false;
+    }
 
+    const size_t storedCapacity =
+        rewindDeltaCapacity_(rewindHistory.back());
     RewindDelta d;
     d.data.swap(rewindHistory.back().data);
     d.displayState = rewindHistory.back().displayState;
+    d.frameXor.swap(rewindHistory.back().frameXor);
+    d.producerXor.swap(rewindHistory.back().producerXor);
+    d.videoEncoded = rewindHistory.back().videoEncoded;
     d.runtimeState = rewindHistory.back().runtimeState;
     rewindHistory.pop_back();
     rewindHistoryBytes -= d.data.size();
     rewindHistoryBytes -= d.runtimeState.machineData.size();
+    rewindHistoryBytes -= rewindDeltaVideoBytes_(d);
+    rewindDeltaAllocatedBytes -= storedCapacity;
 
     // Preserve the exact state being left behind. The forward delta transforms
     // the restored past state back into the current future state, so paused
@@ -398,21 +615,33 @@ namespace Ep128Emu {
       throw Exception("invalid rewind delta");
     }
 
+    VideoDisplay::RewindState targetDisplayState;
+    if (!rewindLoadDisplayDelta_(targetDisplayState, d,
+                                 rewindCurrentDisplayState)) {
+      rewindClearHistory_();
+      throw Exception("invalid rewind video delta");
+    }
     RewindDelta forwardStep;
-    forwardStep.displayState = futureDisplayState;
+    rewindStoreDisplayDelta_(forwardStep, futureDisplayState,
+                             targetDisplayState);
     forwardStep.runtimeState = futureRuntimeState;
     rewindEncodeDelta_(forwardStep.data, futureState,
                        &(rewindCurrentState.front()),
                        rewindCurrentState.size());
     rewindHistoryBytes += forwardStep.data.size();
     rewindHistoryBytes += forwardStep.runtimeState.machineData.size();
+    rewindHistoryBytes += rewindDeltaVideoBytes_(forwardStep);
     rewindForwardHistory.push_back(RewindDelta());
     rewindForwardHistory.back().data.swap(forwardStep.data);
     rewindForwardHistory.back().displayState = forwardStep.displayState;
+    rewindForwardHistory.back().frameXor.swap(forwardStep.frameXor);
+    rewindForwardHistory.back().producerXor.swap(forwardStep.producerXor);
+    rewindForwardHistory.back().videoEncoded = forwardStep.videoEncoded;
     rewindForwardHistory.back().runtimeState = forwardStep.runtimeState;
+    rewindDeltaAllocatedBytes += rewindDeltaCapacity_(rewindForwardHistory.back());
 
     std::vector<unsigned char> targetState(rewindCurrentState);
-    VideoDisplay::RewindState targetDisplayState(d.displayState);
+
     VirtualMachine::RewindRuntimeState targetRuntimeState(d.runtimeState);
     if (!renderFrame) {
       rewindCurrentDisplayState = targetDisplayState;
@@ -423,12 +652,48 @@ namespace Ep128Emu {
       rewindInputReconcilePending = true;
       return true;
     }
+    if (targetRuntimeState.machineData.size() > 14U &&
+        targetRuntimeState.machineData[0] == 3U) {
+      if (!targetDisplayState.valid || targetDisplayState.frameData.empty()
+          || !vm.canRestoreRewindRuntimeState(targetRuntimeState)) {
+        rewindClearHistory_();
+        return false;
+      }
+      try {
+        // No guest cycles, host FILE: calls or disk commands on Previous.
+        rewindLoadState_(targetState);
+        if (!vm.restoreRewindRuntimeState(targetRuntimeState) ||
+            !vm.getVideoDisplay().restoreRewindState(targetDisplayState, true))
+          throw Exception("mounted IMG rewind restore failed");
+        rewindCurrentDisplayState = targetDisplayState;
+        rewindCurrentRuntimeState = targetRuntimeState;
+      }
+      catch (...) {
+        rewindClearHistory_();
+        throw;
+      }
+      rewindLastFrameSequence = vm.getVideoDisplay().getFrameSequenceNumber();
+      rewindFramesAvailable =
+          (rewindHistory.size() > 2 ? rewindHistory.size() - 2 : 0);
+      rewindUpdateTimelineStatus_();
+      rewindInputReconcilePending = true;
+      return true;
+    }
     std::vector<unsigned char> renderState(targetState);
     const RewindDelta& renderStepDelta = rewindHistory.back();
     const RewindDelta& renderAnchorDelta =
         rewindHistory[rewindHistory.size() - 2];
-    VideoDisplay::RewindState renderDisplayState(
-        renderAnchorDelta.displayState);
+    // Reverse history now stores video relative to its newer neighbour.
+    // Reconstruct both intermediate frames before rendering the older anchor.
+    VideoDisplay::RewindState renderStepDisplayState;
+    VideoDisplay::RewindState renderDisplayState;
+    if (!rewindLoadDisplayDelta_(renderStepDisplayState, renderStepDelta,
+                                 targetDisplayState)
+        || !rewindLoadDisplayDelta_(renderDisplayState, renderAnchorDelta,
+                                    renderStepDisplayState)) {
+      rewindClearHistory_();
+      throw Exception("invalid rewind render anchor video delta");
+    }
     VirtualMachine::RewindRuntimeState renderRuntimeState(
         renderAnchorDelta.runtimeState);
     if (!rewindApplyDelta_(renderState, renderStepDelta.data) ||
@@ -438,6 +703,11 @@ namespace Ep128Emu {
     }
 
     const bool audioWasEnabled = vm.getEnableAudioOutput();
+    if (!vm.canRestoreRewindRuntimeState(targetRuntimeState) ||
+        !vm.canRestoreRewindRuntimeState(renderRuntimeState)) {
+      rewindClearHistory_();
+      return false;
+    }
     vm.setEnableAudioOutput(false);
     try {
       rewindLoadState_(renderState);
@@ -446,6 +716,7 @@ namespace Ep128Emu {
       if (renderDisplayState.valid)
         (void) vm.getVideoDisplay().restoreRewindState(renderDisplayState,
                                                        true);
+      vm.setRewindRenderMode(true);
       const uint64_t firstFrame =
           vm.getVideoDisplay().getFrameSequenceNumber();
       size_t elapsedMicroseconds = 0;
@@ -471,6 +742,7 @@ namespace Ep128Emu {
       if (vm.getVideoDisplay().getFrameSequenceNumber() == secondFrame)
         throw Exception("rewind render complete frame timeout");
 
+      vm.setRewindRenderMode(false);
       rewindLoadState_(targetState);
       if (targetRuntimeState.valid)
         (void) vm.restoreRewindRuntimeState(targetRuntimeState);
@@ -481,10 +753,12 @@ namespace Ep128Emu {
       rewindCurrentRuntimeState = targetRuntimeState;
     }
     catch (...) {
+      vm.setRewindRenderMode(false);
       vm.setEnableAudioOutput(audioWasEnabled);
       rewindClearHistory_();
       throw;
     }
+    vm.setRewindRenderMode(false);
     vm.setEnableAudioOutput(audioWasEnabled);
 
     rewindLastFrameSequence =
@@ -503,14 +777,32 @@ namespace Ep128Emu {
   {
     if (rewindForwardHistory.empty() || rewindCurrentState.empty())
       return false;
+    // A recorded future is just as sensitive to external host media changes
+    // as a recorded past. No cached file identity may bypass this preflight.
+    const uint64_t liveEpoch = vm.getRewindHostIOEpoch();
+    const bool mediaSafe = vm.getIsRewindRestoreSupported();
+    if (liveEpoch != rewindLastHostIOEpoch || !mediaSafe ||
+        vm.getIsRecordingDemo() || vm.getIsPlayingDemo()) {
+      rewindBlockedReason = (mediaSafe ? 0U
+                                  : vm.getRewindUnavailableReason());
+      rewindClearHistory_();
+      return false;
+    }
 
+    const size_t storedCapacity =
+        rewindDeltaCapacity_(rewindForwardHistory.back());
     RewindDelta fwd;
     fwd.data.swap(rewindForwardHistory.back().data);
     fwd.displayState = rewindForwardHistory.back().displayState;
+    fwd.frameXor.swap(rewindForwardHistory.back().frameXor);
+    fwd.producerXor.swap(rewindForwardHistory.back().producerXor);
+    fwd.videoEncoded = rewindForwardHistory.back().videoEncoded;
     fwd.runtimeState = rewindForwardHistory.back().runtimeState;
     rewindForwardHistory.pop_back();
     rewindHistoryBytes -= fwd.data.size();
     rewindHistoryBytes -= fwd.runtimeState.machineData.size();
+    rewindHistoryBytes -= rewindDeltaVideoBytes_(fwd);
+    rewindDeltaAllocatedBytes -= storedCapacity;
 
     std::vector<unsigned char> targetState(rewindCurrentState);
     if (!rewindApplyDelta_(targetState, fwd.data)) {
@@ -520,22 +812,34 @@ namespace Ep128Emu {
 
     // Recreate the reverse transition before replacing currentState. This
     // makes Previous available again after an exact forward step.
+    VideoDisplay::RewindState targetDisplayState;
+    if (!rewindLoadDisplayDelta_(targetDisplayState, fwd,
+                                 rewindCurrentDisplayState)) {
+      rewindClearHistory_();
+      throw Exception("invalid forward rewind video delta");
+    }
     RewindDelta rev;
-    rev.displayState = rewindCurrentDisplayState;
+    rewindStoreDisplayDelta_(rev, rewindCurrentDisplayState,
+                             targetDisplayState);
     rev.runtimeState = rewindCurrentRuntimeState;
     rewindEncodeDelta_(rev.data, rewindCurrentState,
                        &(targetState.front()), targetState.size());
 
     rewindHistoryBytes += rev.data.size();
     rewindHistoryBytes += rev.runtimeState.machineData.size();
+    rewindHistoryBytes += rewindDeltaVideoBytes_(rev);
     rewindHistory.push_back(RewindDelta());
     rewindHistory.back().data.swap(rev.data);
     rewindHistory.back().displayState = rev.displayState;
+    rewindHistory.back().frameXor.swap(rev.frameXor);
+    rewindHistory.back().producerXor.swap(rev.producerXor);
+    rewindHistory.back().videoEncoded = rev.videoEncoded;
     rewindHistory.back().runtimeState = rev.runtimeState;
+    rewindDeltaAllocatedBytes += rewindDeltaCapacity_(rewindHistory.back());
 
     if (!renderFrame) {
       rewindCurrentState.swap(targetState);
-      rewindCurrentDisplayState = fwd.displayState;
+      rewindCurrentDisplayState = targetDisplayState;
       rewindCurrentRuntimeState = fwd.runtimeState;
       rewindFramesAvailable =
           (rewindHistory.size() > 2 ? rewindHistory.size() - 2 : 0);
@@ -543,6 +847,39 @@ namespace Ep128Emu {
       return true;
     }
 
+    // Fail closed before restoring any machine state, including the
+    // intermediate historical display anchor.
+    if (!vm.canRestoreRewindRuntimeState(fwd.runtimeState)) {
+      rewindClearHistory_();
+      return false;
+    }
+    if (fwd.runtimeState.machineData.size() > 14U &&
+        fwd.runtimeState.machineData[0] == 3U) {
+      if (!targetDisplayState.valid || targetDisplayState.frameData.empty()) {
+        rewindClearHistory_();
+        return false;
+      }
+      try {
+        // No vm.run(): this is the exact already-recorded future.
+        rewindLoadState_(targetState);
+        if (!vm.restoreRewindRuntimeState(fwd.runtimeState) ||
+            !vm.getVideoDisplay().restoreRewindState(targetDisplayState, true))
+          throw Exception("mounted IMG recorded-next restore failed");
+      }
+      catch (...) {
+        rewindClearHistory_();
+        throw;
+      }
+      rewindCurrentState.swap(targetState);
+      rewindCurrentDisplayState = targetDisplayState;
+      rewindCurrentRuntimeState = fwd.runtimeState;
+      rewindLastFrameSequence = vm.getVideoDisplay().getFrameSequenceNumber();
+      rewindFramesAvailable =
+          (rewindHistory.size() > 2 ? rewindHistory.size() - 2 : 0);
+      rewindUpdateTimelineStatus_();
+      rewindInputReconcilePending = true;
+      return true;
+    }
     // For now reconstruct only the host-visible frame, then restore the exact
     // recorded machine/runtime state. Unlike the old Next implementation, the
     // resulting guest state is never taken from re-simulation.
@@ -559,13 +896,18 @@ namespace Ep128Emu {
         const RewindDelta& anchorDelta =
             rewindHistory[rewindHistory.size() - 2];
         if (rewindApplyDelta_(renderState, anchorDelta.data)) {
+          VideoDisplay::RewindState anchorDisplayState;
+          if (!rewindLoadDisplayDelta_(anchorDisplayState, anchorDelta,
+                                       rewindCurrentDisplayState))
+            throw Exception("invalid forward render anchor video delta");
           rewindLoadState_(renderState);
           if (anchorDelta.runtimeState.valid)
             (void) vm.restoreRewindRuntimeState(anchorDelta.runtimeState);
-          if (anchorDelta.displayState.valid)
+          if (anchorDisplayState.valid)
             (void) vm.getVideoDisplay().restoreRewindState(
-                anchorDelta.displayState, true);
+                anchorDisplayState, true);
 
+          vm.setRewindRenderMode(true);
           uint64_t firstFrame =
               vm.getVideoDisplay().getFrameSequenceNumber();
           size_t elapsedMicroseconds = 0;
@@ -590,21 +932,24 @@ namespace Ep128Emu {
         }
       }
 
+      vm.setRewindRenderMode(false);
       rewindLoadState_(targetState);
       if (fwd.runtimeState.valid)
         (void) vm.restoreRewindRuntimeState(fwd.runtimeState);
-      if (fwd.displayState.valid)
-        (void) vm.getVideoDisplay().restoreRewindState(fwd.displayState, false);
+      if (targetDisplayState.valid)
+        (void) vm.getVideoDisplay().restoreRewindState(targetDisplayState, false);
     }
     catch (...) {
+      vm.setRewindRenderMode(false);
       vm.setEnableAudioOutput(audioWasEnabled);
       rewindClearHistory_();
       throw;
     }
+    vm.setRewindRenderMode(false);
     vm.setEnableAudioOutput(audioWasEnabled);
 
     rewindCurrentState.swap(targetState);
-    rewindCurrentDisplayState = fwd.displayState;
+    rewindCurrentDisplayState = targetDisplayState;
     rewindCurrentRuntimeState = fwd.runtimeState;
     rewindLastFrameSequence =
         vm.getVideoDisplay().getFrameSequenceNumber();
@@ -681,6 +1026,33 @@ namespace Ep128Emu {
       audioPauseApplied = newAudioPause;
     }
 #endif
+    // The live VM step is only 2 ms. The former implementation opened each
+    // mounted IMG many times per step to verify its host file identity, even
+    // with rewind recording disabled. On Windows that induced thousands of
+    // CreateFile calls/sec and repeated antivirus checks.
+    // Media identity is checked at each *published frame* below, and again
+    // immediately before every Previous/Next restore. Guest writes and host
+    // FILE: activity therefore cannot enter a captured/restored history.
+    vm.getVideoDisplay().setRewindFrameCaptureEnabled(
+        vm.getIsRewindDirectFrameRequired());
+    rewindDemoGuardActive = vm.getIsRecordingDemo()
+                            || vm.getIsPlayingDemo();
+    // Paused sessions do not publish frames, but a host/guest disk write can
+    // still occur while VMThread is locked by the GUI. Recheck the media
+    // while paused (the paused loop sleeps for 10 ms) so stale history is
+    // evicted even when no further display frame is generated. This path
+    // never runs in the normal 2 ms live emulation loop.
+    if (pauseFlag && (!rewindCurrentState.empty() ||
+                      !rewindHistory.empty() || !rewindForwardHistory.empty())) {
+      const uint64_t hostIOEpoch = vm.getRewindHostIOEpoch();
+      const bool mediaSafe = vm.getIsRewindRestoreSupported();
+      rewindBlockedReason = (mediaSafe ? 0U : vm.getRewindUnavailableReason());
+      if (hostIOEpoch != rewindLastHostIOEpoch || !mediaSafe ||
+          rewindDemoGuardActive) {
+        rewindClearHistory_();
+      }
+      rewindLastHostIOEpoch = hostIOEpoch;
+    }
     // run emulation, or wait if paused
     double  curTime = prvTime;
     try {
@@ -830,9 +1202,26 @@ namespace Ep128Emu {
       return false;
     }
     {
-      uint64_t frameSequence = vm.getVideoDisplay().getFrameSequenceNumber();
+      // Only a completed host-visible frame can be published to rewind.
+      // Do not touch host IMG paths during the intervening 2 ms quanta.
+      const uint64_t frameSequence =
+          vm.getVideoDisplay().getFrameSequenceNumber();
       if (frameSequence != rewindLastFrameSequence) {
         rewindLastFrameSequence = frameSequence;
+        if (rewindCaptureEnabled || !rewindCurrentState.empty() ||
+            !rewindHistory.empty() || !rewindForwardHistory.empty()) {
+          const uint64_t hostIOEpoch = vm.getRewindHostIOEpoch();
+          const bool mediaSafe = vm.getIsRewindRestoreSupported();
+          rewindBlockedReason = (mediaSafe ? 0U
+                                      : vm.getRewindUnavailableReason());
+          if (hostIOEpoch != rewindLastHostIOEpoch || !mediaSafe ||
+              vm.getIsRecordingDemo() || vm.getIsPlayingDemo()) {
+            if (!rewindCurrentState.empty() || !rewindHistory.empty() ||
+                !rewindForwardHistory.empty())
+              rewindClearHistory_();
+          }
+          rewindLastHostIOEpoch = hostIOEpoch;
+        }
         rewindCaptureFrame_();
       }
     }
@@ -925,7 +1314,11 @@ namespace Ep128Emu {
     rewindTimelinePosition = size_t(timelineStatus & 0xFFFFFFFFULL);
     rewindTimelineLength = size_t(timelineStatus >> 32);
     rewindBufferUsageBytes = vmThread_.rewindBufferUsageBytes;
+    rewindAllocatedUsageBytes = vmThread_.rewindAllocatedUsageBytes;
     rewindBufferLimitBytes = vmThread_.rewindHistoryLimitBytes;
+    rewindUnavailableReason = (!vmThread_.rewindCaptureUserEnabled ? 6U
+                               : !vmThread_.rewindCaptureSpeedAllowed ? 7U
+                               : vmThread_.rewindBlockedReason.load());
     isRecordingDemo = vmThread_.vmStatus.isRecordingDemo;
     isPlayingDemo = vmThread_.vmStatus.isPlayingDemo;
     tapeReadOnly = vmThread_.vmStatus.tapeReadOnly;
@@ -1038,7 +1431,7 @@ namespace Ep128Emu {
     // current history can actually satisfy; otherwise stale requests can
     // survive at the history boundary and consume frames created by later
     // Next Frame operations.
-    bool accepted = (pauseFlag && !exitFlag
+    bool accepted = (pauseFlag && !exitFlag && !rewindDemoGuardActive
                      && size_t(rewindFrameRequests) < available
                      && rewindFrameRequests < 16U);
     if (accepted)
@@ -1053,7 +1446,7 @@ namespace Ep128Emu {
       return 0;
     mutex_.lock();
     size_t accepted = 0;
-    if (pauseFlag && !exitFlag && rewindJumpRequest == 0
+    if (pauseFlag && !exitFlag && !rewindDemoGuardActive && rewindJumpRequest == 0
         && frameAdvanceRequests == 0U && rewindFrameRequests == 0U) {
       const size_t available = rewindFramesAvailable;
       accepted = (n < available ? n : available);
@@ -1072,7 +1465,7 @@ namespace Ep128Emu {
       return 0;
     mutex_.lock();
     size_t accepted = 0;
-    if (pauseFlag && !exitFlag && rewindJumpRequest == 0
+    if (pauseFlag && !exitFlag && !rewindDemoGuardActive && rewindJumpRequest == 0
         && frameAdvanceRequests == 0U && rewindFrameRequests == 0U) {
       const uint64_t timelineStatus = rewindTimelineStatus;
       const size_t position = size_t(timelineStatus & 0xFFFFFFFFULL);
@@ -1091,6 +1484,17 @@ namespace Ep128Emu {
   void VMThread::clearRewindHistory()
   {
     queueMessage(allocateMessage<Message_ClearRewind>());
+  }
+
+  void VMThread::clearRewindHistoryLocked(bool demoStarting)
+  {
+    // Caller already stopped VMThread with VMThread::lock(). This is an
+    // immediate barrier, unlike queued clearRewindHistory().
+    mutex_.lock();
+    rewindClearHistory_();
+    if (demoStarting)
+      rewindDemoGuardActive = true;
+    mutex_.unlock();
   }
 
   void VMThread::setRewindHistoryLimit(size_t limitBytes_)
@@ -1140,8 +1544,18 @@ namespace Ep128Emu {
     queuedFileIODirectory = directory_;
     queuedFileIOEnabled = enabled_;
     queuedFileIODefaultDevice = defaultDeviceIsFILE_;
+    const uint64_t generation = ++queuedFileIOGeneration;
     mutex_.unlock();
-    queueMessage(allocateMessage<Message_FileIOState>());
+    queueMessage(allocateMessage<Message_FileIOState, uint64_t>(generation));
+  }
+
+  void VMThread::invalidateQueuedFileIOStateLocked()
+  {
+    // Do not remove list entries or destroy pending message allocations here:
+    // the VM thread safely discards obsolete generations on dequeue.
+    mutex_.lock();
+    ++queuedFileIOGeneration;
+    mutex_.unlock();
   }
 
   void VMThread::setAudioOutputEnabled(bool enabled_)
@@ -1319,6 +1733,9 @@ namespace Ep128Emu {
 
   void VMThread::Message_FileIOState::process()
   {
+    if (generation != vmThread.queuedFileIOGeneration)
+      return; // F11 or a later archive request superseded this message.
+    vmThread.rewindClearHistory_();
     vmThread.vm.setWorkingDirectory(vmThread.queuedFileIODirectory);
     vmThread.vm.setEnableFileIO(vmThread.queuedFileIOEnabled);
     vmThread.vm.setFileIODefaultDevice(vmThread.queuedFileIODefaultDevice);
@@ -1489,6 +1906,8 @@ namespace Ep128Emu {
   void VMThread::Message_StopDemo::process()
   {
     vmThread.vm.stopDemo();
+    vmThread.rewindClearHistory_();
+    vmThread.rewindDemoGuardActive = false;
   }
 
   VMThread::Message_Dummy::~Message_Dummy()

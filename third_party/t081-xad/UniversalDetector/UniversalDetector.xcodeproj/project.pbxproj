@@ -936,7 +936,7 @@
 				SDKROOT_i386 = "";
 				SDKROOT_ppc = "";
 				SDKROOT_x86_64 = "";
-				SYMROOT = $(SRCROOT)/build/Windows;
+				SYMROOT = /Users/dag/Code/Build/Windows;
 				ZERO_LINK = NO;
 			};
 			name = Release;
@@ -992,7 +992,7 @@
 				SDKROOT_i386 = "";
 				SDKROOT_ppc = "";
 				SDKROOT_x86_64 = "";
-				SYMROOT = $(SRCROOT)/build/Windows;
+				SYMROOT = /Users/dag/Code/Build/Windows;
 			};
 			name = Debug;
 		};

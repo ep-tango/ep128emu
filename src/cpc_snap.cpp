@@ -107,7 +107,23 @@ namespace CPC464 {
 
   bool CPC464VM::getIsRewindRestoreSupported() const
   {
-    return true;
+    // CPC snapshots exclude the FDC and the host-backed disk/tape cursors.
+    // No rewind, even on read-only media, while a disk is mounted.
+    for (int i = 0; i < 4; ++i) {
+      if (floppyDrive->isDiskImageMounted(i))
+        return false;
+    }
+    return !(haveTape() && getTapeButtonState() != 0 && getIsTapeMotorOn());
+  }
+
+  uint64_t CPC464VM::getRewindHostIOEpoch() const
+  {
+    return rewindHostIOEpoch;
+  }
+
+  void CPC464VM::setRewindRenderMode(bool enabled)
+  {
+    rewindRenderMode = enabled;
   }
 
   bool CPC464VM::getRewindRuntimeState(

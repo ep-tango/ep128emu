@@ -8,6 +8,8 @@ void ep128emuEndMacOSRealtimeActivity(void *activityToken);
 void ep128emuSetMacOSTitlebarStatus(Fl_Window *window, const char *text,
                                  bool visible);
 void ep128emuActivateMacOSWindow(Fl_Window *window);
+// Set the running Dock icon to match EP, ZX, CPC or TVC; Finder .app icon stays fixed.
+void ep128emuSetMacOSMachineDockIcon(int machineIconIndex);
 float ep128emuGetMacOSBackingScale(Fl_Window *window);
 int ep128emuGetMacOSWindowFrameExtraHeight(Fl_Window *window);
 void ep128emuResizeMacOSWindowExact(Fl_Window *window, int x, int y, int w, int h);

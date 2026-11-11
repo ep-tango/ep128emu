@@ -77,10 +77,29 @@ namespace Ep128Emu {
     uint8_t     *tmpBuffer;
     long        bufPos;                 // position in track buffer, -1: none
     bool        trackDirtyFlag;
+    // Host-only monotonic barrier: never reset this on virtual FDC reset.
+    uint64_t    mediaWriteEpoch;
+    uint64_t    mediaMountEpoch;
+    bool        rewindWriteGuard;
     // ----------------
     void closeDiskImage();
     uint8_t getLEDState_();
    public:
+    // Host-only IDLE checkpoint. Not part of saved guest snapshot format.
+    // Never copy std::FILE* or cached dirty sector bytes into rewind state.
+    struct RewindIdleState {
+      std::string imageFileName;
+      uint64_t mediaWriteEpoch, mediaMountEpoch;
+      uint8_t currentTrack, currentSide;
+      uint8_t nTracks, nSides, nSectorsPerTrack;
+      uint16_t bytesPerSector;
+      bool mounted, writeProtected, diskChangeFlag;
+      bool motorOnInput, isMotorOn;
+      uint32_t ledStateCounter;
+    };
+    bool getRewindIdleState(RewindIdleState& state) const;
+    bool canRestoreRewindIdleState(const RewindIdleState& state) const;
+    bool restoreRewindIdleState(const RewindIdleState& state);
     FloppyDrive();
     virtual ~FloppyDrive();
     virtual void setDiskImageFile(const std::string& fileName_,
@@ -115,6 +134,10 @@ namespace Ep128Emu {
     inline bool getUserWriteProtected() const { return userWriteProtected; }
     inline bool isNativeSDDWritable() const { return nativeSDDWritable; }
     inline bool isWritableTRDCopy() const { return writableTRDCopy; }
+    inline uint64_t getMediaWriteEpoch() const { return mediaWriteEpoch; }
+    uint64_t getRewindImageIdentity() const;
+    bool isRewindRegularImageEligible() const;
+    inline void setRewindWriteGuard(bool enabled) { rewindWriteGuard = enabled; }
     inline bool requiresDurableWrite() const
     { return nativeSDDWritable || writableTRDCopy; }
     bool syncWritableTRDCopy();
@@ -206,6 +229,9 @@ namespace Ep128Emu {
     }
     inline bool writeByte(uint8_t b)
     {
+      if (rewindWriteGuard)
+        throw Ep128Emu::Exception("FDD: host write forbidden during frame render");
+      ++mediaWriteEpoch;
       trackDirtyFlag = true;
       trackBuffer[bufPos] = b;
       flagsBuffer[bufPos / long(bytesPerSector)] = 0x81;

@@ -2,8 +2,8 @@
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
-  FILEVERSION     2, 1, 0, 0
-  PRODUCTVERSION  2, 1, 0, 0
+  FILEVERSION     2, 1, 1, 0
+  PRODUCTVERSION  2, 1, 1, 0
   FILEFLAGSMASK   0
   FILEFLAGS       0
   FILEOS          VOS__WINDOWS32
@@ -17,12 +17,12 @@ BEGIN
       VALUE "Comments", "Home page: https://github.com/istvan-v/ep128emu/"
       VALUE "CompanyName", "Istvan Varga"
       VALUE "FileDescription", "ep128emu - Enterprise 64/128, Spectrum 48/128, CPC 464/664/6128 and Videoton TVC emulator"
-      VALUE "FileVersion", "2.1"
+      VALUE "FileVersion", "2.1.1"
       VALUE "InternalName", "ep128emu"
       VALUE "LegalCopyright", "Copyright (C) 2003-2017, GPL v2 or later"
       VALUE "OriginalFilename", "ep128emu"
       VALUE "ProductName", "Ep128Emu"
-      VALUE "ProductVersion", "2.1"
+      VALUE "ProductVersion", "2.1.1"
     END
   END
   BLOCK "VarFileInfo"
@@ -35,4 +35,12 @@ END
 102 ICON ".\\resource\\zx128emu.ico"
 103 ICON ".\\resource\\cpc464emu.ico"
 104 ICON ".\\resource\\tvc64emu.ico"
+
+STRINGTABLE
+BEGIN
+    201 "Enterprise 128"
+    202 "ZX Spectrum"
+    203 "Amstrad CPC"
+    204 "Videoton TVC"
+END
 

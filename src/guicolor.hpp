@@ -35,18 +35,25 @@ namespace Ep128Emu {
   void setGUIColorScheme(int colorScheme = 0);
 
   /*!
-   * Set the icon for window 'w' (must be called before the window is first
-   * shown). This is currently only implemented for Windows. 'iconNum' can be
-   * one of the following values:
+   * Set the machine-specific window icon before the first show. Supported
+   * on Windows and FLTK 1.3.3+ X11/Cocoa. On X11, also set the matching
+   * WM_CLASS so the correct .desktop launcher owns the taskbar window.
+   * 'iconNum' can be one of the following values:
    *   0: ep128emu logo
    *   1: zx128emu logo
    *   2: cpc464emu logo
+   *   3: tvc64emu logo
    *  10: information icon
    *  11: question icon
    *  12: warning icon
    *  13: error icon
    */
   void setWindowIcon(Fl_Window *w, int iconNum);
+#ifdef WIN32
+  // Refresh the realized top-level window's taskbar/Alt-Tab icons on Win7+.
+  // A Windows executable's static Explorer icon is intentionally unchanged.
+  void setWindowsTaskbarMachineIcon(Fl_Window *w, int iconNum);
+#endif
 
 }       // namespace Ep128Emu
 

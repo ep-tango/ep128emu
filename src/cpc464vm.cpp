@@ -763,6 +763,8 @@ namespace CPC464 {
     CPC464VM& vm = *(reinterpret_cast<CPC464VM *>(userData));
     vm.tapeSamplesRemaining += vm.tapeSamplesPerCRTCCycle;
     if (vm.tapeSamplesRemaining >= 0) {
+      if (vm.rewindRenderMode)
+        throw Ep128Emu::Exception("Rewind CPC host tape I/O blocked");
       // assume tape sample rate < crtcFrequency
       vm.tapeSamplesRemaining -= (int64_t(1) << 32);
       uint8_t prvTapeInput = vm.tapeInputSignal;
@@ -1027,6 +1029,8 @@ namespace CPC464 {
       isPlayingDemo(false),
       snapshotLoadFlag(false),
       rewindRestoreMode(false),
+      rewindRenderMode(false),
+      rewindHostIOEpoch(0ULL),
       demoTimeCnt(0UL),
       floppyDrive((FDC765_CPC *) 0),
       floppyCycleCnt(1),
@@ -1095,6 +1099,11 @@ namespace CPC464 {
         (bool(ppiPortCState & 0x10) | getIsTapeMotorForcedOn());
     if (newTapeCallbackFlag != tapeCallbackFlag) {
       if (newTapeCallbackFlag == prvTapeCallbackFlag) {
+        // The physical host tape cursor is not in snapshot history.
+        if (rewindRenderMode && newTapeCallbackFlag)
+          throw Ep128Emu::Exception(
+              "Rewind CPC host tape activity blocked");
+        ++rewindHostIOEpoch;
         tapeCallbackFlag = newTapeCallbackFlag;
         tapeInputSignal = 0;
         updatePPIState();
@@ -1299,8 +1308,10 @@ namespace CPC464 {
     if (n < 0 || n > 8)
 #endif
       throw Ep128Emu::Exception("invalid disk drive number");
-    if (n < 4)
+    if (n < 4) {
+      ++rewindHostIOEpoch;  // invalidate both timeline directions on swap/eject
       floppyDrive->openDiskImage(n, fileName_.c_str());
+    }
   }
 
   uint32_t CPC464VM::getFloppyDriveLEDState()
@@ -1310,6 +1321,7 @@ namespace CPC464 {
 
   void CPC464VM::setTapeFileName(const std::string& fileName)
   {
+    ++rewindHostIOEpoch;  // external tape cursor/media changes are not saved
     Ep128Emu::VirtualMachine::setTapeFileName(fileName);
     if (haveTape()) {
       tapeSamplesPerCRTCCycle =
@@ -1320,6 +1332,7 @@ namespace CPC464 {
 
   void CPC464VM::tapePlay()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapePlay();
     if (haveTape() && getIsTapeMotorOn() && getTapeButtonState() != 0)
       stopDemo();
@@ -1327,6 +1340,7 @@ namespace CPC464 {
 
   void CPC464VM::tapeRecord()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeRecord();
     if (haveTape() && getIsTapeMotorOn() && getTapeButtonState() != 0)
       stopDemo();
@@ -1334,11 +1348,13 @@ namespace CPC464 {
 
   void CPC464VM::tapeStop()
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeStop();
   }
 
   void CPC464VM::tapeSeek(double t)
   {
+    ++rewindHostIOEpoch;
     Ep128Emu::VirtualMachine::tapeSeek(t);
   }
 

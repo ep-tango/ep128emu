@@ -4,10 +4,26 @@ set -eu
 APP=${1:?usage: bundle-macos-deps.sh /path/to/app}
 APP=$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+# Every signed/bundled app must contain the machine-specific Dock artwork.
+# This also covers release builds copied from an older qualified .app stage.
+mkdir -p "$APP/Contents/Resources"
+for machine in zx128emu cpc464emu tvc64emu; do
+  cp -pf "$ROOT/resource/$machine.png" "$APP/Contents/Resources/$machine.png"
+done
 FW="$APP/Contents/Frameworks"
 MACOS="$APP/Contents/MacOS"
 DEFAULT_FLTK_PREFIX="$ROOT/../third_party/fltk-1.4.5"
 EXTRA_PREFIX=${EP128EMU_FLTK_PREFIX:-$DEFAULT_FLTK_PREFIX}
+# Explicit isolated Universal trial: never collect ARM-only Homebrew codecs.
+UNIVERSAL_ROOT=${EP128EMU_UNIVERSAL_DEPS_ROOT:-}
+if [ -n "$UNIVERSAL_ROOT" ]; then
+  [ -d "$UNIVERSAL_ROOT" ] || { echo 'UNIVERSAL_ROOT_MISSING' >&2; exit 1; }
+  UNIVERSAL_ROOT=$(cd "$UNIVERSAL_ROOT" && pwd -P)
+  [ "$UNIVERSAL_ROOT" = "$ROOT/build/universal-deps" ] || {
+    echo 'UNIVERSAL_ROOT_OUTSIDE_THIS_WORKTREE' >&2; exit 1;
+  }
+fi
 
 [ -d "$EXTRA_PREFIX/lib" ] || {
   echo "Missing pinned FLTK runtime prefix: $EXTRA_PREFIX" >&2
@@ -20,6 +36,12 @@ EXTRA_PREFIX=${EP128EMU_FLTK_PREFIX:-$DEFAULT_FLTK_PREFIX}
 rm -rf "$FW"
 mkdir -p "$FW"
 
+# Fat Mach-O otool prints a separate non-indented header per architecture.
+# Consider only indented load commands, never architecture headings as deps.
+otool_deps() {
+  otool -L "$1" | awk '/^[[:space:]]/ {print $1}'
+}
+
 is_system_dep() {
   case "$1" in
     /System/Library/*|/usr/lib/*) return 0 ;;
@@ -29,6 +51,20 @@ is_system_dep() {
 
 resolve_dep() {
   dep=$1
+  if [ -n "$UNIVERSAL_ROOT" ]; then
+    case "$dep" in
+      "$UNIVERSAL_ROOT"/*)
+        [ -f "$dep" ] && { printf '%s\n' "$dep"; return 0; }
+        return 1 ;;
+      @rpath/*)
+        base=${dep#@rpath/}
+        for src in "$UNIVERSAL_ROOT"/*-fat/lib/"$base"; do
+          [ -f "$src" ] && { printf '%s\n' "$src"; return 0; }
+        done
+        return 1 ;;
+      /Users/*|/opt/homebrew/*|/usr/local/*) return 1 ;;
+    esac
+  fi
   if [ -n "$EXTRA_PREFIX" ]; then
     case "$dep" in
       "$EXTRA_PREFIX"/*) printf '%s\n' "$dep"; return 0 ;;
@@ -65,12 +101,30 @@ done
 # sdl12-compat and sdl2-compat load the next compatibility layer with
 # dlopen(), so these runtime dependencies are invisible to otool. Bundle
 # them under the exact names searched through @loader_path.
-if [ -e /opt/homebrew/opt/sdl2-compat/lib/libSDL2-2.0.0.dylib ]; then
+if [ -n "$UNIVERSAL_ROOT" ]; then
+  # SDL compatibility layers load each other via dlopen, not Mach-O LC_LOAD_DYLIB.
+  for spec in sdl2compat-fat/lib/libSDL2-2.0.0.dylib sdl3-fat/lib/libSDL3.0.dylib; do
+    src="$UNIVERSAL_ROOT/$spec"
+    [ -f "$src" ] || { echo "UNIVERSAL_SDL_RUNTIME_MISSING: $src" >&2; exit 1; }
+    dst="$FW/$(basename "$src")"
+    cp -L "$src" "$dst"
+    chmod u+w "$dst"
+    printf '%s\n' "$dst" >> "$queue"
+  done
+  # SDL2-compat opens SDL3 through dlopen("@loader_path/libSDL3.dylib")
+  # during a dyld initializer. The pinned SDL3 install library is named
+  # libSDL3.0.dylib, which otool cannot identify as a dlopen requirement.
+  # Provide the exact required SONAME as a relative alias, source-only
+  # packaging. Omitting it triggers SDL2-compat's Cocoa error-dialog path
+  # from within dyld and deadlocks the Finder launch before main().
+  [ -s "$FW/libSDL3.0.dylib" ] || { echo SDL3_RUNTIME_TARGET_MISSING >&2; exit 1; }
+  ln -s libSDL3.0.dylib "$FW/libSDL3.dylib"
+elif [ -e /opt/homebrew/opt/sdl2-compat/lib/libSDL2-2.0.0.dylib ]; then
   cp -L /opt/homebrew/opt/sdl2-compat/lib/libSDL2-2.0.0.dylib "$FW/libSDL2-2.0.0.dylib"
   chmod u+w "$FW/libSDL2-2.0.0.dylib"
   printf '%s\n' "$FW/libSDL2-2.0.0.dylib" >> "$queue"
 fi
-if [ -e /opt/homebrew/opt/sdl3/lib/libSDL3.dylib ]; then
+if [ -z "$UNIVERSAL_ROOT" ] && [ -e /opt/homebrew/opt/sdl3/lib/libSDL3.dylib ]; then
   cp -L /opt/homebrew/opt/sdl3/lib/libSDL3.dylib "$FW/libSDL3.dylib"
   chmod u+w "$FW/libSDL3.dylib"
   printf '%s\n' "$FW/libSDL3.dylib" >> "$queue"
@@ -83,10 +137,13 @@ while :; do
   i=$((i + 1))
   grep -Fqx "$obj" "$seen" && continue
   printf '%s\n' "$obj" >> "$seen"
-  otool -L "$obj" | tail -n +2 | awk '{print $1}' | while IFS= read -r dep; do
+  otool_deps "$obj" | while IFS= read -r dep; do
     is_system_dep "$dep" && continue
     src=$(resolve_dep "$dep" || true)
-    [ -n "$src" ] || continue
+    if [ -z "$src" ]; then
+      [ -z "$UNIVERSAL_ROOT" ] || { echo "UNIVERSAL_DEP_UNRESOLVED: $dep" >&2; exit 1; }
+      continue
+    fi
     base=$(basename "$dep")
     dst="$FW/$base"
     if [ ! -e "$dst" ]; then
@@ -102,7 +159,7 @@ for obj in "$MACOS"/* "$FW"/*; do
   [ -f "$obj" ] || continue
   file "$obj" | grep -q 'Mach-O' || continue
   chmod u+w "$obj"
-  otool -L "$obj" | tail -n +2 | awk '{print $1}' | while IFS= read -r dep; do
+  otool_deps "$obj" | while IFS= read -r dep; do
     is_system_dep "$dep" && continue
     base=$(basename "$dep")
     [ -e "$FW/$base" ] || continue
@@ -119,7 +176,7 @@ done
 for obj in "$MACOS"/* "$FW"/*; do
   [ -f "$obj" ] || continue
   file "$obj" | grep -q 'Mach-O' || continue
-  otool -l "$obj" | awk '/cmd LC_RPATH/{getline; getline; print $2}' | while IFS= read -r rp; do
+  otool -l "$obj" | awk '/cmd LC_RPATH/{getline; getline; print $2}' | sort -u | while IFS= read -r rp; do
     case "$rp" in
       /opt/homebrew/*|/usr/local/*|/opt/local/*|/Users/*)
         install_name_tool -delete_rpath "$rp" "$obj"
@@ -147,7 +204,7 @@ bad=0
 for obj in "$MACOS"/* "$FW"/*; do
   [ -f "$obj" ] || continue
   file "$obj" | grep -q 'Mach-O' || continue
-  if otool -L "$obj" | tail -n +2 | awk '{print $1}' | grep -E '^(/opt/homebrew|/usr/local|/opt/local|/Users)/' >/dev/null; then
+  if otool_deps "$obj" | grep -E '^(/opt/homebrew|/usr/local|/opt/local|/Users)/' >/dev/null; then
     echo "External dependency remains: $obj" >&2
     otool -L "$obj" | grep -E '/opt/homebrew|/usr/local|/opt/local|/Users/' >&2 || true
     bad=1
@@ -166,17 +223,37 @@ for obj in "$MACOS"/* "$FW"/*; do
 done
 [ "$bad" -eq 0 ] || exit 1
 
+# In Universal mode, every bundled executable and dylib must remain fat.
+if [ -n "$UNIVERSAL_ROOT" ]; then
+  for obj in "$MACOS"/* "$FW"/*; do
+    [ -f "$obj" ] || continue
+    file "$obj" | grep -q 'Mach-O' || continue
+    slices=$(lipo -archs "$obj")
+    sorted_archs=$(printf '%s\n' $slices | LC_ALL=C sort | tr '\n' ' ')
+    [ "$sorted_archs" = "arm64 x86_64 " ] || {
+      echo "UNIVERSAL_BUNDLE_MISSING_ARCH: $obj $slices" >&2; exit 1
+    }
+  done
+fi
+
 # install_name_tool invalidates signatures; apply reproducible ad-hoc signatures.
 for dylib in "$FW"/*; do
   [ -f "$dylib" ] || continue
   file "$dylib" | grep -q 'Mach-O' || continue
   codesign --force --sign - --timestamp=none "$dylib" >/dev/null
 done
+# Sign nested helper executables first. Signing the app's main executable
+# before its nested helpers leaves an invalid bundle signature on fat builds.
 for exe in "$MACOS"/*; do
   [ -f "$exe" ] || continue
+  [ "$(basename "$exe")" = ep128emu ] && continue
   file "$exe" | grep -q 'Mach-O' || continue
   codesign --force --sign - --timestamp=none "$exe" >/dev/null
+  codesign --verify --strict "$exe"
 done
+main_exe="$MACOS/ep128emu"
+[ -f "$main_exe" ] || { echo 'MAC_MAIN_EXECUTABLE_MISSING' >&2; exit 1; }
+codesign --force --sign - --timestamp=none "$main_exe" >/dev/null
 codesign --force --deep --sign - --timestamp=none "$APP" >/dev/null
 codesign --verify --deep --strict "$APP"
 

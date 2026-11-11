@@ -18,10 +18,14 @@
 // Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 #include "gui.hpp"
+#include "build_identity.hpp"
 #include "titlebar_fields.hpp"
 #include "sdd_shutdown_guard.hpp"
 #include "archive_drop.hpp"
 #include "archive_standard128_roms.hpp"
+#ifdef __linux__
+# include "enterprise_autorun_cadence.hpp"
+#endif
 #ifdef WIN32
 # include "win_native_drop.hpp"
 # include "win_archive_extract.hpp"
@@ -29,6 +33,11 @@
 # include "enterprise_autorun_cadence.hpp"
 # include <mmsystem.h>  // winmm PlaySoundW for accepted EF04B relay WAV
 # include <FL/platform.H>  // FLTK 1.4 native Win32 MSG, via supported header
+#endif
+#ifdef WIN32
+# include <shellapi.h>
+# include "win_trial_paths.hpp"
+# include "rom_archive_catalog.hpp"
 #endif
 #include <FL/fl_ask.H>
 #include <FL/Fl_Button.H>
@@ -49,12 +58,19 @@
 #include "tvc64vm.hpp"
 #ifdef __APPLE__
 #  include "macos_activity.hpp"
+#  include "macos_rom_relocation.hpp"
+#  include <mach-o/dyld.h>
+#  include <spawn.h>
+#  include <sys/wait.h>
+#  include <unistd.h>
+extern char **environ;
 #endif
 #include "pngwrite.hpp"
 #include <FL/Fl_Gl_Window.H>
 #include <FL/fl_draw.H>
 #include <FL/fl_utf8.h>    // fl_fopen: UTF-8 names on Windows, macOS, Linux
 
+#include <stdexcept>  // Required for std::runtime_error on GCC/Linux
 #include <typeinfo>
 #include <cstdio>
 #include <cstring>
@@ -64,6 +80,35 @@
 #ifndef WIN32
 # include <sys/stat.h>
 #endif
+#ifdef __linux__
+# include <unistd.h>
+#endif
+
+// FLUID omits conditional compilation directives inside embedded .fl code.
+// Keep the original Mac/Windows BetaDisk owner lifecycle, with Linux no-op.
+void ep128emuShutdownBetaPre(Ep128EmuGUI& gui)
+{
+#if defined(__APPLE__) || defined(WIN32)
+  Fl::remove_timeout(&Ep128EmuGUI::betaDOSInputCallback, (void*) &gui);
+  gui.cancelBetaDOSAutoEnter();
+  gui.betaDOSInputStep = -1;
+#else
+  (void) gui;
+#endif
+}
+
+void ep128emuShutdownBetaPost(Ep128EmuGUI& gui)
+{
+#if defined(__APPLE__) || defined(WIN32)
+  gui.speccyDOSMountedSDDPath.clear();
+  gui.betaDOSInputStep = -1;
+  Fl::remove_timeout(&Ep128EmuGUI::betaDOSInputCallback, (void*) &gui);
+  Ep128EmuBetaTrial::removeTemporary(gui.betaDiskTemporaryDiskFile);
+  gui.betaDiskTemporaryDiskFile.clear();
+#else
+  (void) gui;
+#endif
+}
 
 #ifdef __APPLE__
 #  define EP128EMU_ALT_KEY_TEXT  "⌥"
@@ -211,6 +256,127 @@ static std::string ep128emuJoinPath(const std::string& directory,
   s += fileName;
   return s;
 }
+
+#ifdef __APPLE__
+// The existing epmakecfg owns ROM acquisition; launch it as a separate GUI
+// process only after an explicit user choice. Never download inside the VM
+// callback or rewrite stored configuration files without permission.
+static bool ep128emuStartMacROMInstaller()
+{
+  uint32_t n=0;
+  (void) _NSGetExecutablePath((char*)0,&n);
+  if (n<2 || n>32768) return false;
+  std::vector<char> binary(n+1,0);
+  if (_NSGetExecutablePath(&binary[0],&n)!=0) return false;
+  std::string helper(&binary[0]);
+  size_t slash=helper.find_last_of('/');
+  if (slash==std::string::npos) return false;
+  helper.erase(slash+1);
+  helper+="epmakecfg";
+  if (access(helper.c_str(), X_OK)!=0) return false;
+  const std::string root=Ep128Emu::getEp128EmuHomeDirectory();
+  char *args[4]={const_cast<char*>(helper.c_str()),
+                 const_cast<char*>("-r"),
+                 const_cast<char*>(root.c_str()),(char*)0};
+  pid_t pid=0;
+  if (posix_spawn(&pid,helper.c_str(),(posix_spawn_file_actions_t*)0,
+                 (posix_spawnattr_t*)0,args,environ)!=0) return false;
+  // A successful spawn is NOT proof that firmware was downloaded. Wait for
+  // the ROM-only helper to finish before applying a config at startup.
+  int status=0;
+  pid_t done;
+  do { done=waitpid(pid,&status,0); } while (done<0 && errno==EINTR);
+  return done==pid && WIFEXITED(status) && WEXITSTATUS(status)==0;
+}
+
+bool ep128emuOfferMacROMDownload()
+{
+  if (fl_choice("Standard-package ROM files are missing. Download the "
+                "EP128Emu ROM package using epmakecfg?\n"
+                "Existing ROMs and saved settings will be preserved.\n"
+                "The full 72-ROM archive includes TVC and EXOS 2.4 ROMs.\n"
+                "After installation, load the configuration again.",
+                "Not now", "Download ROMs",(const char*)0)!=1)
+    return false;
+  if (ep128emuStartMacROMInstaller()) return true;
+  fl_alert("Cannot start the bundled epmakecfg ROM installer.");
+  return false;
+}
+
+static void ep128emuMenuMacROMDownload(Fl_Widget*, void*)
+{
+  const size_t missing=Ep128EmuMacROM::countMissingStandardROMs(
+      Ep128Emu::getEp128EmuHomeDirectory());
+  if (missing==0) {
+    fl_message("All 72 standard-package ROMs are already installed.\n"
+               "No download is necessary.");
+    return;
+  }
+  (void) ep128emuOfferMacROMDownload();
+}
+#endif
+
+#ifdef WIN32
+// Win7-compatible ROM recovery; ask the user before elevation/network.
+// The existing makecfg.exe -r reuses the original ROM unpacker and preserves
+// all user configs/ROMs. Program Files needs elevated write permission.
+static bool ep128emuStartWindowsROMInstaller()
+{
+  const std::string root = Ep128EmuWinTrial::programDirectory();
+  if (root.empty()) return false;
+  const std::string installer = root + "\\makecfg.exe";
+  if (!Ep128EmuWinTrial::exists(installer)) return false;
+  const std::wstring wideExe = Ep128EmuWinTrial::toWide(installer);
+  const std::wstring wideRoot = Ep128EmuWinTrial::toWide(root);
+  if (wideExe.empty() || wideRoot.empty()) return false;
+  const std::wstring args = L"-r \"" + wideRoot + L"\"";
+  SHELLEXECUTEINFOW info;
+  ZeroMemory(&info, sizeof(info));
+  info.cbSize = sizeof(info);
+  info.fMask = SEE_MASK_NOCLOSEPROCESS;
+  info.lpVerb = L"runas";
+  info.lpFile = wideExe.c_str();
+  info.lpParameters = args.c_str();
+  info.lpDirectory = wideRoot.c_str();
+  info.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&info)) return false;
+  if (info.hProcess) CloseHandle(info.hProcess);
+  return true;
+}
+
+bool ep128emuOfferWindowsROMDownload()
+{
+  if (fl_choice("Standard-package ROM files are missing. Download the "
+                "EP128Emu ROM archive using makecfg?\n"
+                "Existing firmware and settings will be preserved.\n"
+                "Administrator approval may be requested. Retry the "
+                "configuration after installation.\n"
+                "The full 72-ROM archive includes TVC and EXOS 2.4 ROMs.",
+                "Not now", "Download ROMs",(const char*)0)!=1)
+    return false;
+  if (ep128emuStartWindowsROMInstaller()) return true;
+  fl_alert("Could not start the ROM setup utility (makecfg.exe). "
+           "The request may have been cancelled or permission denied.");
+  return false;
+}
+
+static void ep128emuMenuWindowsROMDownload(Fl_Widget*, void*)
+{
+  // The manual action must not announce missing ROMs just because it was
+  // selected. Check the actual R5/R6 installation root (not the GUI CWD).
+  const std::string root=Ep128EmuWinTrial::programDirectory();
+  const size_t missing=Ep128EmuStandardROMs::countMissingInstalled(
+      root, '\\', [](const std::string& path) {
+        return Ep128EmuWinTrial::exists(path);
+      });
+  if (missing==0) {
+    fl_message("All 72 standard-package ROMs are already installed.\n"
+               "No download is necessary.");
+    return;
+  }
+  (void) ep128emuOfferWindowsROMDownload();
+}
+#endif
 
 static bool ep128emuReadableFile(const std::string& fileName)
 {
@@ -658,17 +824,24 @@ static std::string findFFmpegExecutable()
     }
   }
   return std::string("");
+#elif defined(__linux__)
+  // Linux release uses the pinned source-built helper beside this actual
+  // executable, never an unrelated system ffmpeg (which may lack x264).
+  char executablePath[4096];
+  ssize_t n = readlink("/proc/self/exe", executablePath,
+                       sizeof(executablePath) - 1U);
+  if (n <= 0 || size_t(n) >= sizeof(executablePath) - 1U)
+    return std::string();
+  executablePath[n] = '\0';
+  std::string path(executablePath);
+  size_t slash = path.find_last_of('/');
+  if (slash == std::string::npos)
+    return std::string();
+  path.resize(slash + 1U);
+  path += "ep128emu-ffmpeg";
+  return (access(path.c_str(), X_OK) == 0 ? path : std::string());
 #else
-  static const char * const candidates[] = {
-    "/usr/bin/ffmpeg",
-    "/usr/local/bin/ffmpeg",
-    (const char *) 0
-  };
-  for (int i = 0; candidates[i]; i++) {
-    if (access(candidates[i], X_OK) == 0)
-      return std::string(candidates[i]);
-  }
-  return std::string("");
+  return std::string();
 #endif
 }
 
@@ -826,7 +999,8 @@ void Ep128EmuGUI::init_()
   betaDOSAutoEnterOnReset = false;
   betaDOSAutoEnterPolls = 0;
   tapeRelayClickEnabled = true;
-  printerCaptureEnabled = true;
+  printerCaptureEnabled = false;
+  printerCaptureOptInVersion = 0;
   printerOutputFormat = 0;
   printerOutputDirectory = ".";
   printerOutputFile = (std::FILE *) 0;
@@ -951,6 +1125,8 @@ void Ep128EmuGUI::init_()
   guiConfig.createKey("gui.betaDOSAutoEnterOnReset", betaDOSAutoEnterOnReset);
   guiConfig.createKey("gui.tapeRelayClickEnabled", tapeRelayClickEnabled);
   guiConfig.createKey("gui.printerCaptureEnabled", printerCaptureEnabled);
+  guiConfig.createKey("gui.printerCaptureOptInVersion",
+                      printerCaptureOptInVersion);
   guiConfig.createKey("gui.printerOutputFormat", printerOutputFormat);
   guiConfig.createKey("gui.printerOutputDirectory", printerOutputDirectory);
   guiConfig.createKey("gui.tapeMotorSpinUpDelayMs", tapeMotorSpinUpDelayMs);
@@ -996,8 +1172,10 @@ void Ep128EmuGUI::updateDisplay_windowTitle()
   // Reserve the metric slot even with HUD off so the expansion stays put.
   metric = runtimeHUDEnabled ? runtimeStatusText.c_str() : "";
 #endif
+  const std::string versionLabel =
+      std::string("ep128emu ") + EP128EMU_CUSTOM_VERSION;
   const std::string title = Ep128EmuTitle::format(
-      "ep128emu 2.1", ep128emuMachineShortName(vm), speed,
+      versionLabel.c_str(), ep128emuMachineShortName(vm), speed,
       metric, ep128emuSpectrumExpansionName(vm));
   std::snprintf(&(windowTitleBuf[0]), sizeof(windowTitleBuf),
                 "%s", title.c_str());
@@ -1289,18 +1467,16 @@ void Ep128EmuGUI::applyPixelPerfectDisplayState(bool remapHighRes_)
 void Ep128EmuGUI::updateRuntimeStatusDisplay(
     const Ep128Emu::VMThread::VMThreadStatus& status)
 {
+  const char *blocked = (status.rewindUnavailableReason == 1U ? "REWIND OFF: IDE/SD" : (const char *) 0);
 #ifdef __APPLE__
   char statusLabel[64];
-  if (status.isPaused) {
-    const double usedMiB =
-        double(status.rewindBufferUsageBytes) / (1024.0 * 1024.0);
-    const double limitMiB =
-        double(status.rewindBufferLimitBytes) / (1024.0 * 1024.0);
+  if (status.isPaused && blocked && status.rewindTimelineLength <= 1U) {
+    std::snprintf(statusLabel, sizeof(statusLabel), "%s", blocked);
+  }
+  else if (status.isPaused) {
     std::snprintf(statusLabel, sizeof(statusLabel),
-                  "FRAME %zu/%zu  %.1f/%.0f MiB",
-                  status.rewindTimelinePosition,
-                  status.rewindTimelineLength,
-                  usedMiB, limitMiB);
+                  "FRAME %zu/%zu",
+                  status.rewindTimelinePosition, status.rewindTimelineLength);
   }
   else if (measuredFPS < 0.0) {
     std::snprintf(statusLabel, sizeof(statusLabel), "FPS  --.-");
@@ -1316,15 +1492,13 @@ void Ep128EmuGUI::updateRuntimeStatusDisplay(
   // Show the runtime HUD in the native caption without moving the
   // emulator viewport or overlapping the tape and drive indicators.
   char statusLabel[80];
-  if (status.isPaused) {
-    const double usedMiB =
-        double(status.rewindBufferUsageBytes) / (1024.0 * 1024.0);
-    const double limitMiB =
-        double(status.rewindBufferLimitBytes) / (1024.0 * 1024.0);
+  if (status.isPaused && blocked && status.rewindTimelineLength <= 1U) {
+    std::snprintf(statusLabel, sizeof(statusLabel), "%s", blocked);
+  }
+  else if (status.isPaused) {
     std::snprintf(statusLabel, sizeof(statusLabel),
-                  "[FRAME %zu / %zu]     [HISTORY %.1f / %.0f MiB]",
-                  status.rewindTimelinePosition,
-                  status.rewindTimelineLength, usedMiB, limitMiB);
+                  "[FRAME %zu/%zu]",
+                  status.rewindTimelinePosition, status.rewindTimelineLength);
   }
   else if (measuredFPS < 0.0) {
     std::snprintf(statusLabel, sizeof(statusLabel), "[FPS --.-]");
@@ -1478,9 +1652,10 @@ void Ep128EmuGUI::updateDisplay(double t)
     if (nextFrameIndex >= 0) {
       Fl_Menu_Item *nextFrameItem = const_cast<Fl_Menu_Item *>(
           mainMenuBar->menu() + nextFrameIndex);
-      if (oldPauseFlag &&
-          vmThreadStatus.rewindTimelinePosition <
-              vmThreadStatus.rewindTimelineLength)
+      // Even at the latest recorded position, Next must simulate one
+      // new emulated frame. Only forward travel within recorded history
+      // remains restricted by the recorded-future boundary.
+      if (oldPauseFlag)
         nextFrameItem->activate();
       else
         nextFrameItem->deactivate();
@@ -1984,6 +2159,14 @@ void Ep128EmuGUI::createMenus()
                    (char *) 0, &menuCallback_File_SaveMainCfg, (void *) this);
   mainMenuBar->add("File/Configuration/Revert",
                    (char *) 0, &menuCallback_File_RevertCfg, (void *) this);
+#ifdef __APPLE__
+  mainMenuBar->add("File/Configuration/Download missing system ROMs...",
+                   (char *) 0, &ep128emuMenuMacROMDownload, (void *) this);
+#endif
+#ifdef WIN32
+  mainMenuBar->add("File/Configuration/Download missing system ROMs...",
+                   (char *) 0, &ep128emuMenuWindowsROMDownload, (void *) this);
+#endif
   mainMenuBar->add("File/Save snapshot (" EP128EMU_ALT_KEY_TEXT "S)",
                    (char *) 0, &menuCallback_File_SaveSnapshot, (void *) this);
   mainMenuBar->add("File/Load snapshot (" EP128EMU_ALT_KEY_TEXT "L)",
@@ -2460,6 +2643,12 @@ void Ep128EmuGUI::run()
   // Apply the persisted menu-size choice before the main window is shown.
   applyMenuSize();
 #endif
+  // Legacy builds silently opted users into printer interception. Ignore
+  // their saved TRUE until explicitly enabled under the new opt-in policy.
+  if (printerCaptureOptInVersion < 1) {
+    printerCaptureEnabled = false;
+    printerCaptureOptInVersion = 1;
+  }
   // Apply persisted rewind budget after gui_cfg.dat has been loaded.
   applyRewindHistoryLimit();
   if (printerOutputFormat != 0 && printerOutputFormat != 1)
@@ -2535,7 +2724,21 @@ void Ep128EmuGUI::run()
   // Without a callback FLTK hides mainWindow immediately, bypassing it.
   mainWindow->callback(&menuCallback_File_Quit, (void *) this);
   mainWindow->show();
+#ifdef WIN32
+  // Window/shortcut icons already have EP/ZX/CPC/TVC resources. Explicitly
+  // refresh the realized top-level HWND so taskbar and Alt-Tab follow VM mode.
+  Ep128Emu::setWindowsTaskbarMachineIcon(
+      mainWindow, typeid(vm) == typeid(Ep128::Ep128VM) ? 0 :
+      (typeid(vm) == typeid(ZX128::ZX128VM) ? 1 :
+       (typeid(vm) == typeid(CPC464::CPC464VM) ? 2 : 3)));
+#endif
 #ifdef __APPLE__
+  // The machine-specific FLTK window icons are already configured above.
+  // Set the macOS Dock icon once Cocoa has created the actual main window.
+  ep128emuSetMacOSMachineDockIcon(
+      typeid(vm) == typeid(Ep128::Ep128VM) ? 0 :
+      (typeid(vm) == typeid(ZX128::ZX128VM) ? 1 :
+       (typeid(vm) == typeid(CPC464::CPC464VM) ? 2 : 3)));
   ep128emuSetMacOSTitlebarStatus(mainWindow, "FPS  --.-", runtimeHUDEnabled);
 #endif
   emulatorWindow->show();
@@ -3401,7 +3604,70 @@ void Ep128EmuGUI::loadConfigFile(const std::string& fileName, bool addRecent)
       Ep128Emu::ConfigurationDB::getMachineTypeMetadata(fileName.c_str());
   if (!prepareMachineTypedLoad(fileMachineType, fileName, 2, addRecent))
     return;
+#if defined(__APPLE__) || defined(WIN32)
+  Ep128Emu::File::Buffer previousConfig;
+  config.saveState(previousConfig);
+#endif
   config.loadState(fileName.c_str());
+#ifdef __APPLE__
+  (void) Ep128EmuMacROM::repair(config);
+  if (Ep128EmuMacROM::hasMissingDownloadableROM(config) &&
+      ep128emuOfferMacROMDownload()) {
+    // The installer runs separately. Do not leave the active GUI's
+    // configuration half-transitioned while the original VM is still live.
+    config.loadState(previousConfig);
+    return;
+  }
+#endif
+#ifdef WIN32
+  // Only the historically recognized retired paths may be rebased here.
+  // Never rewrite an external/selected configuration file on disk.
+  const std::string currentRoot=Ep128EmuWinTrial::programDirectory();
+  if (!currentRoot.empty()) {
+    for (size_t i=0;i<68;++i) {
+      const std::string oldPath=config.memory.rom[i].file;
+      config.memory.rom[i].file=Ep128EmuWinTrial::relocateMissing(oldPath,currentRoot);
+      if (config.memory.rom[i].file!=oldPath)
+        config.memoryConfigurationChanged=true;
+    }
+  }
+  bool missingSystemROM=false;
+  for (size_t i=0;i<68;++i) {
+    if (!config.memory.rom[i].file.empty() &&
+        !ep128emuReadableFile(config.memory.rom[i].file) &&
+        Ep128EmuStandardROMs::providedByArchive(config.memory.rom[i].file)) {
+      missingSystemROM=true;
+      break;
+    }
+  }
+  if (missingSystemROM && ep128emuOfferWindowsROMDownload()) {
+    config.loadState(previousConfig);
+    return;
+  }
+#endif
+#if defined(__APPLE__) || defined(WIN32)
+  // Generated presets may refer to firmware absent from the original 72-ROM
+  // archive. Do not replace it with a different ROM or half-switch machines.
+  // Explain the missing file and leave the currently running VM untouched.
+  std::string unavailableROM;
+  for (size_t i=0;i<68;++i) {
+    const std::string& rom=config.memory.rom[i].file;
+    if (!rom.empty() && !ep128emuReadableFile(rom) &&
+        !Ep128EmuStandardROMs::providedByArchive(rom)) {
+      size_t slash=rom.find_last_of("/\\");
+      unavailableROM=rom.substr(slash==std::string::npos ? 0 : slash+1);
+      break;
+    }
+  }
+  if (!unavailableROM.empty()) {
+    fl_alert("Cannot load configuration: missing ROM '%s'.\n"
+             "The standard ROM downloader does not contain it.\n"
+             "Install the compatible ROM or select another configuration.",
+             unavailableROM.c_str());
+    config.loadState(previousConfig);
+    return;
+  }
+#endif
   // A full explicit configuration load becomes authoritative even when all
   // persisted RAM/ROM values happen to equal the retained base configuration.
   // This is required after a snapshot has replaced the live memory image.
@@ -3957,6 +4223,16 @@ void Ep128EmuGUI::archiveAutoRunStep()
     }
 
     if (archiveAutoRunPhase == 1) {
+#ifdef __linux__
+      // Linux boot also requires the initial SPACE key to be seen by the
+      // guest keyboard scan. A 10 ms host timeout is less than one 50 Hz
+      // frame, especially during an unthrottled cold EXOS reset.
+      if (!Ep128EmuArchiveAutoRun::keyPhaseElapsed(
+            display.getFrameSequenceNumber(),archiveAutoRunPostStartupFrame)) {
+        Fl::add_timeout(0.005, &archiveAutoRunCallback, (void *) this);
+        return;
+      }
+#endif
       vmThread.setKeyboardState(archiveAutoRunKeyCode, false);
       archiveAutoRunKeyCode = -1;
       archiveAutoRunPhase = 2;
@@ -3967,7 +4243,15 @@ void Ep128EmuGUI::archiveAutoRunStep()
     if (archiveAutoRunPhase == 2) {
       const uint64_t nFrames =
           display.getFrameSequenceNumber() - archiveAutoRunPostStartupFrame;
-      if (nFrames < 250ULL) {           // 5 s after leaving startup
+      // Passive X11 captures show BASIC still initializing 5 s after the
+      // SPACE handoff. Linux must wait 10 guest seconds before typing LOAD;
+      // the accepted Windows/macOS startup cadence remains unchanged.
+#ifdef __linux__
+      const uint64_t waitFrames = 500ULL;
+#else
+      const uint64_t waitFrames = 250ULL;
+#endif
+      if (nFrames < waitFrames) {
         Fl::add_timeout(0.020, &archiveAutoRunCallback, (void *) this);
         return;
       }
@@ -3995,8 +4279,9 @@ void Ep128EmuGUI::archiveAutoRunStep()
       if (archiveAutoRunShift)
         vmThread.setKeyboardState(7, true);
       vmThread.setKeyboardState(archiveAutoRunKeyCode, true);
-#ifdef WIN32
-      // Matrix events are queued into VMThread. Require actual guest video
+#if defined(WIN32) || defined(__linux__)
+      // Windows and Linux: matrix events are queued into VMThread.
+      // Require actual guest video
       // progress rather than assuming that a 10-ms Windows GUI timeout
       // corresponds to enough simulated time for IS-BASIC to scan the key.
       archiveAutoRunKeyFrameStart=display.getFrameSequenceNumber();
@@ -4007,7 +4292,7 @@ void Ep128EmuGUI::archiveAutoRunStep()
     }
 
     if (archiveAutoRunPhase == 4) {
-#ifdef WIN32
+#if defined(WIN32) || defined(__linux__)
       if(!Ep128EmuArchiveAutoRun::keyPhaseElapsed(
             display.getFrameSequenceNumber(),archiveAutoRunKeyFrameStart)) {
         Fl::add_timeout(0.005, &archiveAutoRunCallback, (void *) this);
@@ -4020,7 +4305,7 @@ void Ep128EmuGUI::archiveAutoRunStep()
       archiveAutoRunKeyCode = -1;
       archiveAutoRunShift = false;
 
-#ifdef WIN32
+#if defined(WIN32) || defined(__linux__)
       archiveAutoRunKeyFrameStart=display.getFrameSequenceNumber();
       archiveAutoRunPhase=5; // require key release to reach the VM also
       Fl::add_timeout(0.005, &archiveAutoRunCallback, (void *) this);
@@ -4128,7 +4413,7 @@ void Ep128EmuGUI::startArchiveAutoRun(const std::string& programFile)
 
 bool Ep128EmuGUI::processDroppedArchive(const std::string& fileName)
 {
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(_WIN32) && !defined(__linux__)
   (void) fileName;
   errorMessage("Archive Drag & Run is unavailable on this platform.");
   return false;
@@ -4490,6 +4775,8 @@ void Ep128EmuGUI::applyEmulatorConfiguration(bool updateWindowFlag_)
       bool    memoryConfigurationChanged_ = config.memoryConfigurationChanged;
       bool    updateMenuFlag_ =
           config.soundSettingsChanged | processPriorityChanged_;
+      if (config.fileioSettingsChanged)
+        vmThread.invalidateQueuedFileIOStateLocked();
       config.applySettings();
       // Physical relay mechanics are a real-time-only option. At every
       // other requested speed, including No limit, use stock tape timing.
@@ -4974,7 +5261,9 @@ bool Ep128EmuGUI::handleApplicationShortcut(int keyCode, bool isKeyPress)
       menuCallback_Machine_TapeForce((Fl_Widget *) 0, (void *) this);
       break;
     case EP_SC_TRDOS_ENTER:
+#if defined(__APPLE__) || defined(WIN32)
       menuCallback_Machine_BetaDiskEnterDOS((Fl_Widget *) 0, (void *) this);
+#endif
       break;
     case EP_SC_FORCE_RESET:
       menuCallback_Machine_ColdReset((Fl_Widget *) 0, (void *) this);
@@ -5857,6 +6146,9 @@ void Ep128EmuGUI::menuCallback_File_RecordDemo(Fl_Widget *o, void *v)
           try {
             gui_.demoRecordFile = new Ep128Emu::File();
             gui_.demoRecordFileName = tmp;
+            // Recording can start while paused, without another captured frame.
+            // The barrier must be synchronous, not queued behind a rewind.
+            gui_.vmThread.clearRewindHistoryLocked(true);
             gui_.vm.recordDemo(*(gui_.demoRecordFile));
           }
           catch (...) {
@@ -5933,9 +6225,15 @@ void Ep128EmuGUI::menuCallback_File_RecordVideo(Fl_Widget *o, void *v)
     // be finalized as MP4: older Win32/Win7 packages lack the FFmpeg helper.
     // AVI capture remains available independently of FFmpeg.
     if (modernFormat && findFFmpegExecutable().empty()) {
+#ifdef __linux__
+      gui_.errorMessage("MP4 export requires the bundled ep128emu-ffmpeg "
+                        "next to the emulator. Choose AVI instead; "
+                        "no recording was started.");
+#else
       gui_.errorMessage("MP4 export requires ep128emu-ffmpeg.exe next to "
                         "the emulator. Choose an AVI video recording "
                         "format instead; no recording was started.");
+#endif
       return;
     }
     const char *pattern = (modernFormat ? "MP4 files\t*.mp4"
@@ -6274,9 +6572,13 @@ void Ep128EmuGUI::menuCallback_Machine_NextFrame(Fl_Widget *o, void *v)
   (void) o;
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
   try {
-    // Pause is a frozen timeline browser: Next traverses only recorded future.
-    // New execution starts exclusively through Resume/F10.
-    (void) gui_.vmThread.advanceRecordedFrames(1);
+    Ep128Emu::VMThread::VMThreadStatus status(gui_.vmThread);
+    if (status.isPaused) {
+      if (status.rewindTimelinePosition < status.rewindTimelineLength)
+        (void) gui_.vmThread.advanceRecordedFrames(1);
+      else
+        (void) gui_.vmThread.advanceFrame();
+    }
   }
   catch (std::exception& e) {
     gui_.errorMessage(e.what());
@@ -7203,6 +7505,7 @@ void Ep128EmuGUI::menuCallback_Machine_PrinterCapture(Fl_Widget *, void *v)
   if (!enable)
     gui_.closePrinterOutputFile();
   gui_.printerCaptureEnabled = enable;
+  gui_.printerCaptureOptInVersion = 1;
   if (gui_.lockVMThread()) {
     static_cast<Ep128::Ep128VM&>(gui_.vm).setPrinterCaptureEnabled(enable);
     gui_.unlockVMThread();
@@ -7216,6 +7519,7 @@ void Ep128EmuGUI::menuCallback_Machine_PrinterNewFile(Fl_Widget *, void *v)
   gui_.pollPrinterOutput(); // preserve all previously acknowledged bytes
   gui_.closePrinterOutputFile();
   gui_.printerCaptureEnabled = true;
+  gui_.printerCaptureOptInVersion = 1;
   if (gui_.lockVMThread()) {
     static_cast<Ep128::Ep128VM&>(gui_.vm).setPrinterCaptureEnabled(true);
     gui_.unlockVMThread();
@@ -7436,7 +7740,9 @@ void Ep128EmuGUI::menuCallback_Machine_Reset(Fl_Widget *o, void *v)
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
   try {
     gui_.vmThread.reset(false);
+#if defined(__APPLE__) || defined(WIN32)
     gui_.armBetaDOSAutoEnterIfReady();
+#endif
   }
   catch (std::exception& e) {
     gui_.errorMessage(e.what());
@@ -7449,7 +7755,9 @@ void Ep128EmuGUI::menuCallback_Machine_ColdReset(Fl_Widget *o, void *v)
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
   try {
     gui_.vmThread.reset(true);
+#if defined(__APPLE__) || defined(WIN32)
     gui_.armBetaDOSAutoEnterIfReady();
+#endif
   }
   catch (std::exception& e) {
     gui_.errorMessage(e.what());
@@ -7474,11 +7782,19 @@ void Ep128EmuGUI::menuCallback_Machine_ResetAll(Fl_Widget *o, void *v)
   (void) o;
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
   try {
+#if defined(__APPLE__) || defined(WIN32)
     gui_.cancelBetaDOSAutoEnter();
+#endif
     gui_.finishArchiveFileIOOverride(false, false);
     bool resetCompleted = false;
     if (gui_.lockVMThread()) {
       try {
+        // Shift+F11 bypasses the ordinary queued Reset message. Invalidate
+        // BOTH past and recorded future while the VM is still stopped.
+        gui_.vmThread.clearRewindHistoryLocked();
+        // Shift+F11 is a synchronous configuration authority transition.
+        // Obsolete Archive Drag & Run FILE: messages must not replay after it.
+        gui_.vmThread.invalidateQueuedFileIOStateLocked();
         gui_.vm.stopDemo();
         gui_.config.vmConfigurationChanged = true;
         gui_.config.memoryConfigurationChanged = true;
@@ -7520,6 +7836,9 @@ void Ep128EmuGUI::menuCallback_Machine_QuickCfgL1(Fl_Widget *o, void *v)
             fileMachineType, restartFileName, 2, false))
       return;
     gui_.config.loadState(fName, true);
+#ifdef __APPLE__
+    (void) Ep128EmuMacROM::repair(gui_.config);
+#endif
     if (gui_.snapshotRuntimeMemoryActive)
       gui_.config.memoryConfigurationChanged = true;
     gui_.finishArchiveFileIOOverride(true, true);
@@ -7548,6 +7867,9 @@ void Ep128EmuGUI::menuCallback_Machine_QuickCfgL2(Fl_Widget *o, void *v)
             fileMachineType, restartFileName, 2, false))
       return;
     gui_.config.loadState(fName, true);
+#ifdef __APPLE__
+    (void) Ep128EmuMacROM::repair(gui_.config);
+#endif
     if (gui_.snapshotRuntimeMemoryActive)
       gui_.config.memoryConfigurationChanged = true;
     gui_.finishArchiveFileIOOverride(true, true);

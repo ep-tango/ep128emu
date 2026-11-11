@@ -46,7 +46,9 @@ namespace Ep128Emu {
       size_t    rewindTimelinePosition;
       size_t    rewindTimelineLength;
       size_t    rewindBufferUsageBytes;
+      size_t    rewindAllocatedUsageBytes;
       size_t    rewindBufferLimitBytes;
+      unsigned int rewindUnavailableReason;
       // --------
       VMThreadStatus(VMThread& vmThread_);
     };
@@ -83,11 +85,20 @@ namespace Ep128Emu {
     std::string     queuedFileIODirectory;
     bool            queuedFileIOEnabled;
     bool            queuedFileIODefaultDevice;
+    // An explicit GUI config/reset invalidates still queued archive FileIO
+    // overrides. Only the latest generation may touch host-side file state.
+    uint64_t        queuedFileIOGeneration;
 
     struct RewindDelta {
       std::vector<unsigned char> data;
       VideoDisplay::RewindState displayState;
+      // Compressed reversible XOR vs the adjacent current video frame.
+      // Current display state always remains uncompressed.
+      std::vector<unsigned char> frameXor;
+      std::vector<unsigned char> producerXor;
+      bool videoEncoded;
       VirtualMachine::RewindRuntimeState runtimeState;
+      RewindDelta() : videoEncoded(false) {}
     };
     std::deque<RewindDelta>      rewindHistory;
     std::vector<RewindDelta>     rewindForwardHistory;
@@ -97,11 +108,16 @@ namespace Ep128Emu {
     VideoDisplay::RewindState    rewindCurrentDisplayState;
     VirtualMachine::RewindRuntimeState rewindCurrentRuntimeState;
     size_t                       rewindHistoryBytes;
+    size_t                       rewindDeltaAllocatedBytes;
     std::atomic<size_t>          rewindHistoryLimitBytes;
     std::atomic<size_t>          rewindFramesAvailable;
     std::atomic<uint64_t>        rewindTimelineStatus;
     std::atomic<size_t>          rewindBufferUsageBytes;
+    std::atomic<size_t>          rewindAllocatedUsageBytes;
     uint64_t                     rewindLastFrameSequence;
+    uint64_t                     rewindLastHostIOEpoch;
+    std::atomic<bool>            rewindDemoGuardActive;
+    std::atomic<unsigned int>    rewindBlockedReason;
     unsigned int                 rewindFrameRequests;
     int                          rewindJumpRequest;
     bool                         rewindCaptureEnabled;
@@ -111,6 +127,21 @@ namespace Ep128Emu {
     uint8_t                      mouseButtonState;
     bool                         rewindInputReconcilePending;
 
+    static size_t rewindDeltaCapacity_(const RewindDelta& d);
+    static size_t rewindDeltaVideoBytes_(const RewindDelta& d);
+    static bool rewindEncodeVideoXor_(std::vector<unsigned char>& out,
+             const std::vector<unsigned char>& target,
+             const std::vector<unsigned char>& adjacent);
+    static bool rewindDecodeVideoXor_(std::vector<unsigned char>& out,
+             const std::vector<unsigned char>& code,
+             const std::vector<unsigned char>& adjacent);
+    static void rewindStoreDisplayDelta_(RewindDelta& d,
+             const VideoDisplay::RewindState& target,
+             const VideoDisplay::RewindState& adjacent);
+    static bool rewindLoadDisplayDelta_(VideoDisplay::RewindState& out,
+             const RewindDelta& d,
+             const VideoDisplay::RewindState& adjacent);
+    size_t rewindEstimatedAllocatedBytes_() const;
     void rewindUpdateTimelineStatus_();
     void rewindTrimToLimit_();
     void rewindClearHistory_();
@@ -175,6 +206,9 @@ namespace Ep128Emu {
      * Discard all captured rewind history.
      */
     void clearRewindHistory();
+    // Requires the caller to hold the VM thread stopped via lock().
+    // Used for synchronous demo-start and full configuration reset barriers.
+    void clearRewindHistoryLocked(bool demoStarting = false);
     /*!
      * Set host-RAM budget for rewind history. The update is executed by the
      * emulation thread; lowering the limit trims only oldest past history and
@@ -209,6 +243,9 @@ namespace Ep128Emu {
      */
     void setFileIOState(const std::string& directory_, bool enabled_,
                         bool defaultDeviceIsFILE_);
+    // Call only while VMThread::lock() is held: an explicit configuration
+    // or reset supersedes all previously queued archive FILE: overrides.
+    void invalidateQueuedFileIOStateLocked();
     /*!
      * Set amplitude scale for audio output.
      */
@@ -317,9 +354,11 @@ namespace Ep128Emu {
       virtual void process();
     };
     class Message_FileIOState : public Message {
+     private:
+      uint64_t generation;
      public:
-      Message_FileIOState(VMThread& vmThread_)
-        : Message(vmThread_)
+      Message_FileIOState(VMThread& vmThread_, uint64_t generation_)
+        : Message(vmThread_), generation(generation_)
       {
       }
       virtual ~Message_FileIOState();

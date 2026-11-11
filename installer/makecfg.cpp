@@ -34,23 +34,26 @@
 #else
 #  include <windows.h>
 #  include <direct.h>
+#  include <wininet.h>
 #endif
 
 #include <vector>
+#include "../gui/rom_archive_catalog.hpp"
 
 #ifndef MAKECFG_ROM_PKG_NAME
 #  define MAKECFG_ROM_PKG_NAME  "ep128emu_roms-2.0.11.bin"
 #endif
 
-#ifdef MAKECFG_USE_CURL
+#if defined(MAKECFG_USE_CURL) || defined(WIN32)
 #  ifndef MAKECFG_ROM_URL_1
-#    define MAKECFG_ROM_URL_1   "http://ep128.hu/Emu/" MAKECFG_ROM_PKG_NAME
+// Restore the exact ROM package used by original EP128emu 2.0.11.2.
+#    define MAKECFG_ROM_URL_1   "https://ep128.hu/Emu/ep128emu_roms-2.0.11.bin"
 #  endif
 #  ifndef MAKECFG_ROM_URL_2
-#    define MAKECFG_ROM_URL_2   "https://enterpriseforever.com/"        \
-                                "letoltesek-downloads/egyeb-misc/"      \
-                                "?action=dlattach;attach=16928"
+#    define MAKECFG_ROM_URL_2   "https://www.ep128.hu/Emu/ep128emu_roms-2.0.11.bin"
 #  endif
+#endif
+#ifdef MAKECFG_USE_CURL
 #  include <curl/curl.h>
 #endif
 
@@ -234,7 +237,8 @@ class Ep128EmuMachineConfiguration {
  public:
   Ep128EmuMachineConfiguration(Ep128Emu::ConfigurationDB& config,
                                uint64_t machineConfig,
-                               const std::string& romDirectory);
+                               const std::string& romDirectory,
+                               bool useExdos13 = false);
   ~Ep128EmuMachineConfiguration()
   {
   }
@@ -432,6 +436,10 @@ static const EPMachineConfig machineConfigs[] = {
     | EP_ROM_FENAS12_22 | EP_ROM_ZX41_UK | EP_ROM_GENMON | EP_ROM_ZT19_UK
     | EP_ROM_FORTH | EP_ROM_BRD_43
   },
+  // Downloadable stock 128K+EXDOS preset: no missing ISDOS or EXDOS 1.4.
+  { "ep128brd/EP_128k_EXDOS13.cfg",
+    EP_RAM_128K | EP_ROM_EXOS21 | EP_ROM_BRD_04 | EP_ROM_BASIC21_05
+  },
   { "ep128brd/EP_128k_EXDOS.cfg",
     EP_RAM_128K | EP_ROM_EXOS21 | EP_ROM_BRD_04 | EP_ROM_BASIC21_05
     | EP_ROM_EXDOS14I_BRD
@@ -490,6 +498,10 @@ static const EPMachineConfig machineConfigs[] = {
     | EP_ROM_FENAS12_22 | EP_ROM_ZX41_UK | EP_ROM_GENMON | EP_ROM_ZT19_UK
     | EP_ROM_FORTH | EP_ROM_ESP_43
   },
+  // Downloadable stock 128K+EXDOS preset: no missing ISDOS or EXDOS 1.4.
+  { "ep128esp/EP_128k_EXDOS13.cfg",
+    EP_RAM_128K | EP_ROM_EXOS21 | EP_ROM_ESP_04 | EP_ROM_BASIC21_05
+  },
   { "ep128esp/EP_128k_EXDOS.cfg",
     EP_RAM_128K | EP_ROM_EXOS21 | EP_ROM_ESP_04 | EP_ROM_BASIC21_05
     | EP_ROM_EXDOS14I_ES
@@ -547,6 +559,10 @@ static const EPMachineConfig machineConfigs[] = {
     | EP_ROM_EPFILEIO | EP_ROM_LISP | EP_ROM_HEASS10_HU | EP_ROM_EXDOS14I_HU
     | EP_ROM_FENAS12_22 | EP_ROM_ZX41_HU | EP_ROM_GENMON | EP_ROM_ZT19_HU
     | EP_ROM_FORTH | EP_ROM_HUN_43
+  },
+  // Downloadable stock 128K+EXDOS preset: no missing ISDOS or EXDOS 1.4.
+  { "ep128hun/EP_128k_EXDOS13.cfg",
+    EP_RAM_128K | EP_ROM_EXOS21 | EP_ROM_HUN_04 | EP_ROM_BASIC21_05
   },
   { "ep128hun/EP_128k_EXDOS.cfg",
     EP_RAM_128K | EP_ROM_EXOS21 | EP_ROM_HUN_04 | EP_ROM_BASIC21_05
@@ -611,6 +627,10 @@ static const EPMachineConfig machineConfigs[] = {
     | EP_ROM_EPFILEIO | EP_ROM_LISP | EP_ROM_HEASS10_UK | EP_ROM_EXDOS14I_UK
     | EP_ROM_FENAS12_22 | EP_ROM_ZX41_UK | EP_ROM_GENMON | EP_ROM_ZT19_UK
     | EP_ROM_FORTH | EP_ROM_PASCAL12
+  },
+  // Downloadable stock 128K+EXDOS preset: no missing ISDOS or EXDOS 1.4.
+  { "ep128uk/EP_128k_EXDOS13.cfg",
+    EP_RAM_128K | EP_ROM_EXOS21 | EP_ROM_BASIC21_04
   },
   { "ep128uk/EP_128k_EXDOS.cfg",
     EP_RAM_128K | EP_ROM_EXOS21 | EP_ROM_BASIC21_04 | EP_ROM_EXDOS14I_UK
@@ -803,7 +823,7 @@ static const EPMachineConfig machineConfigs[] = {
 
 Ep128EmuMachineConfiguration::Ep128EmuMachineConfiguration(
     Ep128Emu::ConfigurationDB& config, uint64_t machineConfig,
-    const std::string& romDirectory)
+    const std::string& romDirectory, bool useExdos13)
 {
   sdext.romFile.clear();
   sdext.enabled = false;
@@ -912,6 +932,12 @@ Ep128EmuMachineConfiguration::Ep128EmuMachineConfiguration(
           tmp = (tmp & 0x00FFFFFFUL) << 8;
         }
       }
+    }
+    // EXDOS 1.3 is an explicit overlay: the 64-bit ROM mask is full.
+    // Never shift by 64 or alias another firmware selection bit.
+    if (useExdos13) {
+      memory.rom[0x20].file = romDirectory + "exdos13.rom";
+      memory.rom[0x20].offset = 0;
     }
     vm.soundClockFrequency = vm.cpuClockFrequency >> 3;
     vm.enableMemoryTimingEmulation = true;
@@ -1174,7 +1200,11 @@ bool Ep128EmuConfigInstallerGUI::unpackROMFiles(const std::string& romDir,
                              &curlRecvCallback) != CURLE_OK ||
             curl_easy_setopt(curl_, CURLOPT_WRITEDATA,
                              &curlCallbackUserData) != CURLE_OK ||
-            curl_easy_setopt(curl_, CURLOPT_URL, romURL) != CURLE_OK) {
+            curl_easy_setopt(curl_, CURLOPT_URL, romURL) != CURLE_OK ||
+            curl_easy_setopt(curl_, CURLOPT_FOLLOWLOCATION, 1L) != CURLE_OK ||
+            curl_easy_setopt(curl_, CURLOPT_FAILONERROR, 1L) != CURLE_OK ||
+            curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT, 10L) != CURLE_OK ||
+            curl_easy_setopt(curl_, CURLOPT_TIMEOUT, 120L) != CURLE_OK) {
           throw Ep128Emu::Exception("Error configuring cURL download");
         }
         inBuf.clear();
@@ -1199,8 +1229,8 @@ bool Ep128EmuConfigInstallerGUI::unpackROMFiles(const std::string& romDir,
           curl_easy_cleanup(curl_);
           curl_ = (CURL *) 0;
           if (i == 0) {
-            errorMessage("Error downloading from http://ep128.hu, "
-                         "trying https://enterpriseforever.com instead");
+            errorMessage("Primary HTTPS ROM archive unavailable, "
+                         "trying the backup server");
             continue;
           }
         }
@@ -1209,6 +1239,71 @@ bool Ep128EmuConfigInstallerGUI::unpackROMFiles(const std::string& romDir,
       }
     }
     curl_global_cleanup();
+  }
+#elif defined(WIN32)
+  else if (enableROMDownload) {
+    // Win7-compatible HTTPS fetch: no third-party libcurl DLL is required.
+    // Feed the original ROM archive decompressor, not an alternative unpacker.
+    usingLocalFile = false;
+    HINTERNET internet = InternetOpenW(L"EP128emu ROM setup",
+                                       INTERNET_OPEN_TYPE_PRECONFIG,
+                                       (LPCWSTR) 0, (LPCWSTR) 0, 0);
+    if (!internet)
+      throw Ep128Emu::Exception("Cannot initialize Windows HTTPS download");
+    const DWORD connectTimeout = 10000, readTimeout = 15000;
+    InternetSetOptionW(internet, INTERNET_OPTION_CONNECT_TIMEOUT,
+                       (LPVOID) &connectTimeout, sizeof(connectTimeout));
+    InternetSetOptionW(internet, INTERNET_OPTION_RECEIVE_TIMEOUT,
+                       (LPVOID) &readTimeout, sizeof(readTimeout));
+    bool success = false;
+    for (int attempt = 0; attempt < 2 && !success; ++attempt) {
+      HINTERNET request = (HINTERNET) 0;
+      const char *url = (attempt == 0 ? MAKECFG_ROM_URL_1 : MAKECFG_ROM_URL_2);
+      std::wstring wideURL;
+      for (const char *p = url; *p; ++p)
+        wideURL += wchar_t(static_cast<unsigned char>(*p));
+      // Refuse insecure links or TLS certificate bypasses.
+      if (wideURL.compare(0, 8, L"https://") != 0)
+        continue;
+      request = InternetOpenUrlW(internet, wideURL.c_str(),
+                 (LPCWSTR) 0, 0,
+                 INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD |
+                 INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_UI |
+                 INTERNET_FLAG_NO_AUTO_REDIRECT, 0);
+      if (!request) continue;
+      DWORD httpCode = 0, bytes = sizeof(httpCode);
+      bool ok = (HttpQueryInfoW(request,
+                 HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                 &httpCode, &bytes, (DWORD *) 0) != FALSE && httpCode == 200);
+      inBuf.clear();
+      while (ok) {
+        unsigned char chunk[16384];
+        DWORD count = 0;
+        if (!InternetReadFile(request, chunk, sizeof(chunk), &count)) {
+          ok = false;
+          break;
+        }
+        if (count == 0) break;
+        if (inBuf.size() + size_t(count) > 0x00100000U) {
+          ok = false;
+          break;
+        }
+        inBuf.insert(inBuf.end(), chunk, chunk + count);
+        Fl::check();
+        if (cancelButtonPressed) {
+          InternetCloseHandle(request);
+          InternetCloseHandle(internet);
+          throw Ep128Emu::Exception("ROM download cancelled");
+        }
+      }
+      InternetCloseHandle(request);
+      success = ok && inBuf.size() >= 100000U;
+      if (!success && attempt == 0)
+        errorMessage("Primary HTTPS ROM source unavailable; trying backup");
+    }
+    InternetCloseHandle(internet);
+    if (!success)
+      throw Ep128Emu::Exception("Unable to download the ROM package via HTTPS");
   }
 #endif
   else {
@@ -1243,6 +1338,14 @@ bool Ep128EmuConfigInstallerGUI::unpackROMFiles(const std::string& romDir,
     size_t  offs = nFiles * 32 + 4;
     if (offs > buf.size())
       throw Ep128Emu::Exception("unexpected end of packed ROM data");
+    // A transport-successful response must NOT be accepted if an obsolete
+    // 46-ROM archive (or an incomplete/modified package) was served instead
+    // of the genuine 2.0.11.2 package. Check all names and lengths BEFORE
+    // writing any ROM. Locally supplied archives remain user controlled.
+    if (enableROMDownload && !usingLocalFile &&
+        !Ep128EmuStandardROMs::isCompleteROMPackage(buf))
+      throw Ep128Emu::Exception(
+          "Downloaded ROM package does not match EP128emu 2.0.11.2");
     // extract and write all ROM files
     bool    err = false;        // true if there are any write errors
     for (size_t i = 0; i < nFiles; i++) {
@@ -1271,6 +1374,16 @@ bool Ep128EmuConfigInstallerGUI::unpackROMFiles(const std::string& romDir,
           c = 0x5F;
         }
         fName += char(c);
+      }
+      // A recovery download may fill missing system ROMs but must never
+      // silently overwrite existing user-provided/custom firmware bytes.
+      if (preserveExistingROMs) {
+        std::FILE *existing = Ep128Emu::fileOpen(fName.c_str(), "rb");
+        if (existing) {
+          std::fclose(existing);
+          offs += fileSize;
+          continue;
+        }
       }
       f = Ep128Emu::fileOpen(fName.c_str(), "wb");
       if (!f) {
@@ -1352,6 +1465,8 @@ int main(int argc, char **argv)
 #endif
   bool    forceInstallFlag = false;
   bool    presetOnlyFlag = false;
+  bool    romOnlyFlag = false;
+  bool    firstRunROMOffer = false;
   bool    defaultCfgInstall = false;
   std::string installDirectory = "";
   {
@@ -1362,6 +1477,19 @@ int main(int argc, char **argv)
           break;
         if (argv[i][1] == 'f' && argv[i][2] == '\0') {
           forceInstallFlag = true;
+          continue;
+        }
+        if (argv[i][1] == 'd' && argv[i][2] == '\0') {
+          // First-run installer: keep the upstream interactive wizard,
+          // but preselect ROM download instead of silently installing an
+          // unusable ROM-free configuration. User may uncheck before OK.
+          firstRunROMOffer = true;
+          continue;
+        }
+        if (argv[i][1] == 'r' && argv[i][2] == '\0') {
+          // Explicit, ROM-only recovery. No preset or user config rewrite.
+          forceInstallFlag = true;
+          romOnlyFlag = true;
           continue;
         }
         if (argv[i][1] == 'p' && argv[i][2] == '\0') {
@@ -1453,9 +1581,20 @@ int main(int argc, char **argv)
     }
     gui->enableCfgInstall = defaultCfgInstall;
     gui->cfgInstallValuator->value(int(defaultCfgInstall));
-#ifdef MAKECFG_USE_CURL
+#if defined(MAKECFG_USE_CURL) || defined(WIN32)
     gui->romDownloadValuator->activate();
     gui->romDownloadLabel->activate();
+    if (firstRunROMOffer) {
+      gui->enableROMDownload = true;
+      gui->preserveExistingROMs = true;
+      gui->romDownloadValuator->value(1);
+    }
+#else
+    if (firstRunROMOffer) {
+      gui->errorMessage("ROM download is not available in this build");
+      delete gui;
+      return 2;
+    }
 #endif
     gui->mainWindow->show();
     do {
@@ -1466,6 +1605,30 @@ int main(int argc, char **argv)
       delete gui;
       return 0;
     }
+  }
+  else if (romOnlyFlag) {
+#if defined(MAKECFG_USE_CURL) || defined(WIN32)
+    gui->enablePresetCfgInstall = false;
+    gui->enableCfgInstall = false;
+    gui->enableROMDownload = true;
+    gui->preserveExistingROMs = true;
+    gui->romDownloadValuator->activate();
+    gui->romDownloadLabel->activate();
+    gui->romDownloadValuator->value(1);
+    gui->presetCfgValuator->value(0);
+    gui->presetCfgValuator->deactivate();
+    gui->cfgInstallValuator->value(0);
+    gui->cfgInstallValuator->deactivate();
+    // Installer ROM-only mode: display download progress, but no presets,
+    // machine configurations or existing ROM images are overwritten.
+    gui->mainWindow->label("Downloading missing ep128emu system ROMs");
+    gui->mainWindow->show();
+    Fl::check();
+#else
+    gui->errorMessage("This epmakecfg was built without ROM download support");
+    delete gui;
+    return 2;
+#endif
   }
   else {
     gui->enablePresetCfgInstall = true;
@@ -1571,8 +1734,9 @@ int main(int argc, char **argv)
   if (gui->enablePresetCfgInstall | gui->enableROMDownload) {
     try {
       double  decompressTime = 1.0;
-      if (gui->unpackROMFiles(romDirectory, decompressTime)) {
-        // if successfully extracted, delete compressed ROM package
+      if (gui->unpackROMFiles(romDirectory, decompressTime) && !romOnlyFlag) {
+        // Only the legacy full installer may delete a local ROM archive.
+        // Recovery mode preserves every preexisting user-owned file.
         std::string tmp(romDirectory);
         tmp += MAKECFG_ROM_PKG_NAME;
         std::FILE *f = Ep128Emu::fileOpen(tmp.c_str(), "r+b");
@@ -1611,9 +1775,17 @@ int main(int argc, char **argv)
       delete config;
       for (int i = 0; i < 4; i++) {
         const char  *fName = "ep128cfg.dat";
-        // EP_128k_EXDOS
+        // Default EP config must boot after the original 72-ROM download.
+        // Preserve legacy 1.4 + ISDOS selection only when user supplies it.
+        std::FILE *exdos14 = Ep128Emu::fileOpen(
+            (romDirectory + "exdos14isdos10uk.rom").c_str(), "rb");
+        const bool haveExdos14 = (exdos14 != (std::FILE *) 0);
+        if (exdos14)
+          std::fclose(exdos14);
         uint64_t    machineConfig = EP_RAM_128K | EP_ROM_EXOS21
-                                    | EP_ROM_BASIC21_04 | EP_ROM_EXDOS14I_UK;
+                                    | EP_ROM_BASIC21_04
+                                    | (haveExdos14 ? EP_ROM_EXDOS14I_UK
+                                                   : uint64_t(0));
         if (i == 1) {
           fName = "zx128cfg.dat";
           // ZX_128k
@@ -1633,7 +1805,8 @@ int main(int argc, char **argv)
         config = new Ep128Emu::ConfigurationDB();
         dsCfg = new Ep128EmuDisplaySndConfiguration(*config);
         mCfg = new Ep128EmuMachineConfiguration(*config, machineConfig,
-                                                romDirectory);
+                                                romDirectory,
+                                                (i == 0 && !haveExdos14));
         setKeyboardConfiguration(*config, (gui->keyboardMapHU ? 1 : 0));
         std::string fileIODir = installDirectory + "files";
         config->createKey("fileio.workingDirectory", fileIODir);
@@ -1664,7 +1837,9 @@ int main(int argc, char **argv)
     for (int i = 0; machineConfigs[i].fileName; i++) {
       config = new Ep128Emu::ConfigurationDB();
       mCfg = new Ep128EmuMachineConfiguration(*config, machineConfigs[i].config,
-                                              romDirectory);
+                                              romDirectory,
+                                              (std::strstr(machineConfigs[i].fileName,
+                                                           "_EXDOS13.cfg") != 0));
       saveConfigurationFile(*config,
                             configDirectory, machineConfigs[i].fileName, *gui);
       delete config;

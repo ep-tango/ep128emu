@@ -332,6 +332,10 @@ namespace Ep128 {
   void Ep128VM::configureSDCard(bool isEnabled, const std::string& romFileName)
   {
     stopDemo();
+    // A guest-visible SD mapping transition invalidates historical rewind
+    // checkpoints, even when its image remains mounted in the host.
+    if (sdext.isSDExtSegment(0x07U) != isEnabled)
+      ++rewindHostIOEpoch;
     sdext.reset(2);
     sdext.setEnabled(isEnabled);
     sdext.openROMFile(romFileName.c_str());

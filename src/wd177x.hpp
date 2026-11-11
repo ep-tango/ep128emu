@@ -73,6 +73,20 @@ namespace Ep128Emu {
     static uint16_t calculateCRC(const uint8_t *buf, size_t nBytes,
                                  uint16_t n = 0xFFFF);
    public:
+    // State is valid only at an idle command boundary. Selected pointers
+    // are encoded as a drive index, never serialized as raw addresses.
+    struct RewindIdleState {
+      int selectedDrive; // -1 = private dummy drive
+      uint8_t command, status, track, sector, data;
+      uint8_t writeTrackSectorsRemaining, writeTrackState;
+      bool irq, drq, isWD1773, steppingIn, busyFlagHackEnabled, busyFlagHack;
+    };
+    bool getRewindIdleState(RewindIdleState& out,
+                            const FloppyDrive* drives, int count) const;
+    bool canRestoreRewindIdleState(const RewindIdleState& state,
+                                   const FloppyDrive* drives, int count) const;
+    bool restoreRewindIdleState(const RewindIdleState& state,
+                                FloppyDrive* drives, int count);
     WD177x();
     virtual ~WD177x();
     void setFloppyDrive(FloppyDrive *d);

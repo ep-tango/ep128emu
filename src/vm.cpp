@@ -813,15 +813,41 @@ namespace Ep128Emu {
     return false;
   }
 
+  unsigned int VirtualMachine::getRewindUnavailableReason() const
+  {
+    return 0U;
+  }
+
   bool VirtualMachine::getIsRewindRestoreSupported() const
   {
     return false;
+  }
+
+  bool VirtualMachine::getIsRewindDirectFrameRequired() const
+  {
+    return false;
+  }
+
+  uint64_t VirtualMachine::getRewindHostIOEpoch() const
+  {
+    return 0U;
+  }
+
+  void VirtualMachine::setRewindRenderMode(bool enabled)
+  {
+    (void) enabled;
   }
 
   bool VirtualMachine::getRewindRuntimeState(RewindRuntimeState& state) const
   {
     state = RewindRuntimeState();
     return false;
+  }
+
+  bool VirtualMachine::canRestoreRewindRuntimeState(
+      const RewindRuntimeState& state) const
+  {
+    return state.valid;
   }
 
   bool VirtualMachine::restoreRewindRuntimeState(

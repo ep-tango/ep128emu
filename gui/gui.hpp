@@ -47,6 +47,9 @@
 #include <FL/Fl_Native_File_Chooser.H>
 
 class Ep128EmuGUI;
+// Keep platform-specific BetaDisk cleanup out of FLUID-generated C++.
+void ep128emuShutdownBetaPre(Ep128EmuGUI&);
+void ep128emuShutdownBetaPost(Ep128EmuGUI&);
 class Ep128EmuGUI_DiskConfigWindow;
 class Ep128EmuGUI_DisplayConfigWindow;
 class Ep128EmuGUI_KbdConfigWindow;

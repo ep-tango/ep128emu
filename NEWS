@@ -1,5 +1,5 @@
-EP128Emu 2.1 — new features
---------------------------
+Changes in version 2.0.12
+-------------------------
 
   * macOS ARM64: direct restart between Enterprise, ZX Spectrum, Amstrad CPC and Videoton TVC
   * added configurable application shortcuts with direct key-combination capture
@@ -30,9 +30,8 @@ EP128Emu 2.1 — new features
   * hardened VM-thread lock/unlock synchronization, eliminating an intermittent "emulation thread does not respond" race during rapid configuration/reset transitions
   * protected Archive Drag & Run temporary Standard 128K state from leaking into Save as ASCII configuration exports
 
-  Note: the upstream change history below is archival background and
-  does not identify earlier public releases by the ep-tango project.
-  Original emulator by Istvan Varga; subsequent macOS and Windows enhancements by project contributors.
+  This 2.0.12 macOS ARM64 release is a custom continuation of ep128emu 2.0.11.2.
+  Original emulator by Istvan Varga; custom macOS enhancements by Attila G.
 
 Changes in version 2.0.11.2
 ---------------------------

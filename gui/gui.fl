@@ -10,6 +10,10 @@ class Ep128EmuGUI {open
 } {
   decl {void queueWindowsDroppedFiles(const std::string& files);} {public
   }
+  decl {friend void ep128emuShutdownBetaPre(Ep128EmuGUI&);} {public
+  }
+  decl {friend void ep128emuShutdownBetaPost(Ep128EmuGUI&);} {public
+  }
   decl {friend class Ep128EmuGUI_DiskConfigWindow;} {public
   }
   decl {friend class Ep128EmuGUI_DisplayConfigWindow;} {public
@@ -66,6 +70,7 @@ class Ep128EmuGUI {open
   decl {std::string runtimeStatusText;} {}
   decl {bool tapeRelayClickEnabled;} {}
   decl {bool printerCaptureEnabled;} {}
+  decl {int printerCaptureOptInVersion;} {}
   decl {int printerOutputFormat;} {}
   decl {std::string printerOutputDirectory;} {}
   decl {std::FILE *printerOutputFile;} {}
@@ -532,17 +537,9 @@ class Ep128EmuGUI {open
   } {
     code {{
   debugWindow->hide();
-  Fl::remove_timeout(&betaDOSInputCallback, (void *) this);
-  cancelBetaDOSAutoEnter();
-  betaDOSInputStep = -1;
+  ep128emuShutdownBetaPre(*this);
   vmThread.quit(true);
-#if defined(__APPLE__) || defined(WIN32)
-  speccyDOSMountedSDDPath.clear();
-  betaDOSInputStep=-1;
-  Fl::remove_timeout(&Ep128EmuGUI::betaDOSInputCallback,(void *)this);
-  Ep128EmuBetaTrial::removeTemporary(betaDiskTemporaryDiskFile);
-  betaDiskTemporaryDiskFile.clear();
-#endif
+  ep128emuShutdownBetaPost(*this);
   // VM has stopped: flush any last acknowledged output before closing.
   if (printerOutputFile && typeid(vm) == typeid(Ep128::Ep128VM)) {
     std::string remaining;

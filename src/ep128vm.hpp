@@ -84,6 +84,7 @@ namespace Ep128 {
       void writeUserMemory(uint16_t addr, uint8_t value);
      public:
       void closeAllFiles();
+      bool hasOpenFiles() const { return !fileChannels.empty(); }
       void setDefaultDeviceIsFILE(bool isFILE)
       {
         defaultDeviceIsFILE = isFILE;
@@ -206,6 +207,9 @@ namespace Ep128 {
     // true only while VMThread restores an in-memory rewind state; this
     // suppresses normal snapshot-load external I/O side effects.
     bool      rewindRestoreMode;
+    bool      rewindRenderMode;
+    uint64_t  rewindHostIOEpoch;
+    bool      rewindAuxMediaMounted[5];  // 4 IDE, 1 SDExt
     // used for counting time between demo events (in NICK cycles)
     uint64_t  demoTimeCnt;
     // floppy drives
@@ -534,6 +538,8 @@ namespace Ep128 {
      * equivalent to calling tapePlay().
      */
     virtual void tapeRecord();
+    virtual void tapeStop();
+    virtual void tapeSeek(double t);
     // ------------------------------ DEBUGGING -------------------------------
     /*!
      * Add or delete a single breakpoint (see also bplist.hpp).
@@ -704,9 +710,27 @@ namespace Ep128 {
      * playing a demo.
      */
     virtual bool getIsPlayingDemo() const;
+    // Coordinated host-only capture; used on the locked VM thread.
+    // Does not enable mounted-media rewind by itself.
+    struct RewindDiskState {
+      Ep128Emu::FloppyDrive::RewindIdleState drives[4];
+      Ep128Emu::WD177x::RewindIdleState controller;
+      uint64_t hostIOEpoch;
+    };
+    bool getRewindDiskState(RewindDiskState& out) const;
+    bool canRestoreRewindDiskState(const RewindDiskState& state) const;
+    bool restoreRewindDiskState(const RewindDiskState& state);
     virtual bool getIsRewindRestoreSupported() const;
+    virtual unsigned int getRewindUnavailableReason() const;
+    virtual bool getIsRewindDirectFrameRequired() const;
+    virtual uint64_t getRewindHostIOEpoch() const;
+    virtual void setRewindRenderMode(bool enabled);
+    virtual void setWorkingDirectory(const std::string& dirName_);
+    virtual void setEnableFileIO(bool enabled);
     virtual bool getRewindRuntimeState(
         Ep128Emu::VirtualMachine::RewindRuntimeState& state) const;
+    virtual bool canRestoreRewindRuntimeState(
+        const Ep128Emu::VirtualMachine::RewindRuntimeState& state) const;
     virtual bool restoreRewindRuntimeState(
         const Ep128Emu::VirtualMachine::RewindRuntimeState& state);
     virtual void setRewindRestoreMode(bool enabled);

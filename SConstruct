@@ -27,6 +27,15 @@ enableMIDI = int(ARGUMENTS.get('midi', 0))
 # use cURL library in makecfg to download the ROM package
 enableCURL = int(ARGUMENTS.get('curl', int(not mingwCrossCompile)))
 userFlags = ARGUMENTS.get('cflags', '')
+# Targeted adaptation of czo/ep128emu 096c820 (arch) and e3bcf10 (minmacos).
+userArch = ARGUMENTS.get('arch', '').strip()
+userMinMacosVersion = ARGUMENTS.get('minmacos', '').strip()
+# Only the separate 2.2 trial worktree may request the pinned Universal deps.
+universalDepsMode = hostMacBuild and int(ARGUMENTS.get('universaldeps', 0))
+macUniversalDepsRoot = (os.path.realpath(os.path.abspath('build/universal-deps'))
+                        if universalDepsMode else None)
+if int(ARGUMENTS.get('universaldepscheck', 0)) and not universalDepsMode:
+    Exit('UNIVERSAL_DEPS_CHECK_REQUIRES_UNIVERSAL_DEPS_OPT_IN')
 disablePkgConfig = int(ARGUMENTS.get('nopkgconfig',
                                      int(linux32CrossCompile or \
                                          mingwCrossCompile)))
@@ -55,7 +64,7 @@ else:
 
 fltkLibsLinux = '-lfltk -lfltk_images -lfltk_jpeg -lfltk_png'
 fltkLibsMinGW = fltkLibsLinux.replace(' -lfltk_jpeg', '').replace(' -lfltk_png', '') + ' -lz -lcomdlg32 -lcomctl32 -lole32'
-fltkLibsMinGW = fltkLibsMinGW + ' -luuid -lws2_32 -lwinmm -lgdi32 -ladvapi32'
+fltkLibsMinGW = fltkLibsMinGW + ' -luuid -lws2_32 -lwinmm -lgdi32 -ladvapi32 -lshell32'
 if mingwCrossCompile and not win64CrossCompile:
     # Win7/MinGW32 FLTK 1.4.5 pulls these native 32-bit import libraries.
     # Preserve the accepted UCRT64 Windows x64 and macOS linker paths.
@@ -98,6 +107,17 @@ packageConfigs = {
 }
 
 
+# The default/macOS ARM64 and all Windows builds retain their original
+# package resolution. 2.2 Universal is a separate explicit opt-in.
+if universalDepsMode:
+    luaPrefix = os.path.join(macUniversalDepsRoot, 'lua-fat')
+    packageConfigs['Lua'][0] = ('echo -I' + luaPrefix + '/include -L'
+                                 + luaPrefix + '/lib -llua')
+    packageConfigs['Lua'][1] = ['']
+    # Homebrew has an actual sdl.pc and overrides the Provides: sdl
+    # metadata in the pinned sdl12_compat.pc. Request exact package.
+    packageConfigs['SDL'][1] = ['sdl12_compat']
+
 # Mac-only toolchain contract. Never silently fall back to /usr/local FLTK 1.3
 # or Homebrew when building in a new Git worktree or resuming SCons directly.
 # All failures must occur before SCons compiles or links any source files.
@@ -106,9 +126,18 @@ macPinnedFLTKConfig = None
 macPinnedFLTKFluid = None
 if hostMacBuild:
     macPinnedFLTKPrefix = os.path.realpath(os.path.expanduser(
-        os.environ.get('EP128EMU_FLTK_PREFIX', '~/Library/ep128emu/fltk-1.4.5')))
+        '~/Developer/EP128/EP128EMU/third_party/fltk-1.4.5'))
+    macNativeFLTKPrefix = macPinnedFLTKPrefix
+    # Explicit 2.2 trial opt-in only. Keep the accepted ARM64 prefix untouched.
+    # The alternate FLTK is built from the *same pinned 1.4.5 source tarball*.
+    # The native ARM64 fluid remains the build-time GUI compiler.
+    if int(ARGUMENTS.get('universaldeps', 0)):
+        if sorted(userArch.split()) != ['arm64', 'x86_64']:
+            Exit('UNIVERSAL_DEPS_REQUIRES_BOTH_ARCHES')
+        macPinnedFLTKPrefix = os.path.realpath(os.path.abspath(
+            'build/universal-deps/fltk-1.4.5-fat'))
     macPinnedFLTKConfig = os.path.join(macPinnedFLTKPrefix, 'bin', 'fltk-config')
-    macPinnedFLTKFluid = os.path.join(macPinnedFLTKPrefix, 'bin', 'fluid')
+    macPinnedFLTKFluid = os.path.join(macNativeFLTKPrefix, 'bin', 'fluid')
     for var, required in (('EP128EMU_FLTK_PREFIX', macPinnedFLTKPrefix),
                           ('EP128EMU_FLTK_CONFIG', macPinnedFLTKConfig),
                           ('EP128EMU_FLUID', macPinnedFLTKFluid)):
@@ -162,6 +191,58 @@ if hostMacBuild:
        fluidVersion != 'fluid v1.4.5':
         Exit('FLTK_PIN_TOOL_MISMATCH: invalid wrapper include/lib or fluid version')
     print('FLTK_PIN_1_4_5_PREFLIGHT_PASS: ' + macPinnedFLTKPrefix)
+    if universalDepsMode:
+        # Fail before source compilation if a dependency or architecture
+        # slice is absent. No silent Homebrew ARM64 fallback.
+        fatLibs = (
+            ('portaudio', 'libportaudio.dylib'),
+            ('libsndfile', 'libsndfile.dylib'),
+            ('flac', 'libFLAC.dylib'),
+            ('libogg', 'libogg.dylib'),
+            ('libvorbis', 'libvorbis.dylib'),
+            ('lame', 'libmp3lame.dylib'),
+            ('lua', 'liblua.dylib'),
+            ('sdl3', 'libSDL3.dylib'),
+            ('sdl2compat', 'libSDL2.dylib'),
+            ('sdl12compat', 'libSDL.dylib'),
+            ('sdl12compat', 'libSDLmain.a'))
+        for prefixName, libName in fatLibs:
+            filename = os.path.join(macUniversalDepsRoot,
+                                    prefixName + '-fat', 'lib', libName)
+            if not os.path.isfile(filename):
+                Exit('UNIVERSAL_DEP_MISSING: ' + filename)
+            try:
+                slices = subprocess.check_output(
+                    ['lipo', '-archs', filename],
+                    stderr=subprocess.STDOUT).decode('utf-8').split()
+            except (OSError, subprocess.CalledProcessError) as exc:
+                Exit('UNIVERSAL_DEP_LIPO_ERROR: %s' % exc)
+            if sorted(slices) != ['arm64', 'x86_64']:
+                Exit('UNIVERSAL_DEP_SLICES_MISSING: %s: %s' %
+                     (filename, slices))
+        pkgPaths = [os.path.join(macUniversalDepsRoot, n + '-fat',
+                                 'lib', 'pkgconfig')
+                    for n in ('sdl12compat', 'sdl2compat', 'sdl3',
+                              'libsndfile', 'portaudio', 'flac',
+                              'libogg', 'libvorbis', 'opus', 'mpg123')]
+        trialPkgEnv = dict(os.environ)
+        trialPkgEnv['PKG_CONFIG_PATH'] = os.pathsep.join(pkgPaths)
+        for pkg, prefix in (('sdl12_compat', 'sdl12compat'), ('sndfile', 'libsndfile'),
+                            ('portaudio-2.0', 'portaudio')):
+            try:
+                actual = subprocess.check_output(
+                    ['pkg-config', '--variable=prefix', pkg],
+                    env=trialPkgEnv,
+                    stderr=subprocess.STDOUT).decode('utf-8').strip()
+            except (OSError, subprocess.CalledProcessError) as exc:
+                Exit('UNIVERSAL_DEPS_PKGCONFIG_MISSING: %s: %s' % (pkg, exc))
+            expected = os.path.join(macUniversalDepsRoot, prefix + '-fat')
+            if os.path.realpath(actual) != os.path.realpath(expected):
+                Exit('UNIVERSAL_DEPS_PKGCONFIG_WRONG_ORIGIN: %s=%s expected %s'
+                     % (pkg, actual, expected))
+        print('UNIVERSAL_DEPS_SOURCE_PIN_AND_ARCH_GATE_PASS: 11 artifacts')
+        if int(ARGUMENTS.get('universaldepscheck', 0)):
+            Exit(0)
     if int(ARGUMENTS.get('fltkcheck', 0)):
         print('FLTK_PIN_STANDALONE_CHECK_PASS')
         Exit(0)
@@ -263,6 +344,9 @@ if hostMacBuild:
     sconsEnv['EP128EMU_FLTK_PREFIX'] = macPinnedFLTKPrefix
     sconsEnv['EP128EMU_FLTK_CONFIG'] = macPinnedFLTKConfig
     sconsEnv['EP128EMU_FLUID'] = macPinnedFLTKFluid
+    if universalDepsMode:
+        # pkg-config sees our original pinned 2.2 libraries first, not brew.
+        sconsEnv['PKG_CONFIG_PATH'] = os.pathsep.join(pkgPaths)
 else:
     for k in ('EP128EMU_FLTK_PREFIX', 'EP128EMU_FLTK_CONFIG'):
         if k in os.environ:
@@ -287,6 +371,20 @@ if hostMacBuild:
     # FLTK 1.4 dylibs use @rpath for their internal dependencies.
     ep128emuLibEnvironment.Append(
         LINKFLAGS = ['-Wl,-rpath,' + fltkPrefix + '/lib'])
+    if universalDepsMode:
+        # Complete codec/SDL dylib closure for the *trial* build only.
+        # Final .app packaging must replace absolute paths with bundle paths.
+        libPrefixes = ('sdl12compat', 'sdl2compat', 'sdl3', 'lua',
+                       'portaudio', 'libsndfile', 'lame', 'flac',
+                       'libogg', 'libvorbis', 'opus', 'mpg123')
+        prefixPaths = [os.path.join(macUniversalDepsRoot, x + '-fat')
+                       for x in libPrefixes]
+        ep128emuLibEnvironment.Prepend(
+            CPPPATH = [x + '/include' for x in prefixPaths])
+        ep128emuLibEnvironment.Prepend(
+            LIBPATH = [x + '/lib' for x in prefixPaths])
+        ep128emuLibEnvironment.Append(
+            LINKFLAGS = ['-Wl,-rpath,' + x + '/lib' for x in prefixPaths])
 if not linux32CrossCompile:
     linkFlags = ' -L. '
 else:
@@ -330,6 +428,24 @@ if enableMIDI:
     ep128emuLibEnvironment.Append(CCFLAGS = ['-DENABLE_MIDI_PORT'])
     ep128emuLibEnvironment.Append(CPPPATH = ['./portmidi/pm_common',
                                              './portmidi/porttime'])
+
+# Czo's multi-architecture SCons flags must remain paired (-arch, value).
+# Do not turn on multiarch implicitly: dependency slices are a separate gate.
+if userArch:
+    arches = userArch.split()
+    if not hostMacBuild or len(set(arches)) != len(arches) or any(
+            arch not in ('arm64', 'x86_64') for arch in arches):
+        Exit('MAC_ARCH_INVALID: expected distinct arm64 and/or x86_64 on macOS')
+    for arch in arches:
+        ep128emuLibEnvironment.Append(CCFLAGS = [['-arch', arch]])
+        ep128emuLibEnvironment.Append(LINKFLAGS = [['-arch', arch]])
+if userMinMacosVersion:
+    import re
+    if not hostMacBuild or not re.fullmatch(r'[0-9]{1,2}\.[0-9]{1,2}(?:\.[0-9]{1,2})?', userMinMacosVersion):
+        Exit('MAC_MIN_VERSION_INVALID: expected e.g. minmacos=11.0 on macOS')
+    macMinFlag = '-mmacosx-version-min=' + userMinMacosVersion
+    ep128emuLibEnvironment.Append(CCFLAGS = [macMinFlag])
+    ep128emuLibEnvironment.Append(LINKFLAGS = [macMinFlag])
 
 ep128emuGUIEnvironment = copyEnvironment(ep128emuLibEnvironment)
 if mingwCrossCompile:
@@ -483,16 +599,25 @@ if enableSDExt:
 if enableReSID:
     ep128emuLibEnvironment.Append(CCFLAGS = ['-DENABLE_RESID'])
 
-ep128emuGUIEnvironment.MergeFlags(ep128emuLibEnvironment['CCFLAGS'])
-ep128emuGLGUIEnvironment.MergeFlags(ep128emuLibEnvironment['CCFLAGS'])
-makecfgEnvironment.MergeFlags(ep128emuLibEnvironment['CCFLAGS'])
-tapeeditEnvironment.MergeFlags(ep128emuLibEnvironment['CCFLAGS'])
+# Czo 096c820: preserve list-valued -arch pairs when propagating flags.
+ep128emuGUIEnvironment.MergeFlags({'CCFLAGS': ep128emuLibEnvironment['CCFLAGS']})
+ep128emuGLGUIEnvironment.MergeFlags({'CCFLAGS': ep128emuLibEnvironment['CCFLAGS']})
+makecfgEnvironment.MergeFlags({'CCFLAGS': ep128emuLibEnvironment['CCFLAGS']})
+tapeeditEnvironment.MergeFlags({'CCFLAGS': ep128emuLibEnvironment['CCFLAGS']})
 
 def fluidCompile(flNames):
     cppNames = []
     # The FLUID emitter uses the global SCons Command builder, not the
     # per-target ENV: never rely on PATH to find the pinned Mac tool.
     fluidExecutable = ('"' + macPinnedFLTKFluid + '"') if hostMacBuild else 'fluid'
+    # The Linux release pins FLUID explicitly: the global SCons Command
+    # ignores caller PATH and otherwise picks Debian FLUID 1.3.8.
+    if sys.platform[:5] == 'linux' and not mingwCrossCompile:
+        linuxFluid = os.environ.get('EP128EMU_FLUID', '').strip()
+        if linuxFluid:
+            if not os.path.isfile(linuxFluid) or not os.access(linuxFluid, os.X_OK):
+                Exit('LINUX_PINNED_FLUID_MISSING')
+            fluidExecutable = '"' + linuxFluid + '"'
     for flName in flNames:
         if flName.endswith('.fl'):
             cppName = flName[:-3] + '_fl.cpp'
@@ -642,6 +767,9 @@ if enableReSID:
 # -----------------------------------------------------------------------------
 
 ep128emuEnvironment = copyEnvironment(ep128emuGLGUIEnvironment)
+# Label the *binary variant*, not the CPU slice currently executing.
+if hostMacBuild and sorted(userArch.split()) == ['arm64', 'x86_64']:
+    ep128emuEnvironment.Append(CPPDEFINES = ['EP128EMU_MACOS_UNIVERSAL_BUILD'])
 ep128emuEnvironment.Append(CPPPATH = ['./z80', './gui'])
 if haveLua and oldLuaVersion:
     ep128emuEnvironment.Append(LIBS = ['lualib'])
@@ -655,6 +783,8 @@ if mingwCrossCompile:
     ep128emuSources += ['gui/win_archive_extract.cpp']
     ep128emuSources += ['gui/win_native_drop.cpp']
     ep128emuSources += ['gui/win_rar_fallback.cpp']
+    ep128emuEnvironment.Append(LIBS = ['archive'])
+if sys.platform[:5] == 'linux' and not mingwCrossCompile:
     ep128emuEnvironment.Append(LIBS = ['archive'])
 if hostMacBuild:
     ep128emuSources += ['gui/macos_activity.mm', 'gui/macos_about.mm']
@@ -679,6 +809,12 @@ if hostMacBuild:
     Command('ep128emu.app/Contents/Resources/EP_rele.wav',
             'resource/EP_rele.wav',
             'mkdir -p ep128emu.app/Contents/Resources ; cp -pf $SOURCES $TARGET')
+    # Keep the original per-machine icon artwork with every macOS .app.
+    # The Enterprise app/Finder icon remains the existing ep128emu.icns.
+    for machineIcon in ('zx128emu', 'cpc464emu', 'tvc64emu'):
+        Command('ep128emu.app/Contents/Resources/' + machineIcon + '.png',
+                'resource/' + machineIcon + '.png',
+                'mkdir -p ep128emu.app/Contents/Resources ; cp -pf $SOURCES $TARGET')
 
 # -----------------------------------------------------------------------------
 
@@ -777,6 +913,9 @@ if buildUtilities:
 
 makecfgEnvironment.Append(CPPPATH = ['./installer'])
 makecfgEnvironment.Prepend(LIBS = ['ep128emu'])
+if mingwCrossCompile:
+    # WinINet is available since Win7; avoid distributing a libcurl DLL.
+    makecfgEnvironment.Append(LIBS = ['wininet'])
 if enableCURL:
     if configurePackage(makecfgEnvironment, 'cURL'):
         makecfgEnvironment.Append(CCFLAGS = ['-DMAKECFG_USE_CURL'])

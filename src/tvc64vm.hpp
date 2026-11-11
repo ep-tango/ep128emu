@@ -73,6 +73,7 @@ namespace TVC64 {
       virtual EP128EMU_REGPARM1 void tapePatch();
      public:
       void closeFile();
+      bool hasOpenHostFile() const { return fileIOFile != 0; }
     };
     class Memory_ : public Memory {
      private:
@@ -162,6 +163,8 @@ namespace TVC64 {
     // keyboard state will be cleared
     bool      snapshotLoadFlag;
     bool      rewindRestoreMode;
+    bool      rewindRenderMode;
+    uint64_t  rewindHostIOEpoch;
     // used for counting time between demo events (in CRTC cycles)
     uint64_t  demoTimeCnt;
     // floppy drives
@@ -515,6 +518,10 @@ namespace TVC64 {
      */
     virtual bool getIsPlayingDemo() const;
     virtual bool getIsRewindRestoreSupported() const;
+    virtual uint64_t getRewindHostIOEpoch() const;
+    virtual void setRewindRenderMode(bool enabled);
+    virtual void setWorkingDirectory(const std::string& dirName_);
+    virtual void setEnableFileIO(bool enabled);
     virtual bool getRewindRuntimeState(
         Ep128Emu::VirtualMachine::RewindRuntimeState& state) const;
     virtual bool restoreRewindRuntimeState(

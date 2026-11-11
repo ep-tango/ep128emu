@@ -22,6 +22,7 @@
 
 #include "ep128emu.hpp"
 #include <atomic>
+#include <vector>
 
 #define EP128EMU_VSYNC_MIN_LINES        290
 #define EP128EMU_VSYNC_MAX_LINES        351
@@ -118,9 +119,19 @@ namespace Ep128Emu {
       int   vsyncCnt;
       bool  vsyncState;
       bool  oddFrame;
+      // Host-side completed-frame payload used by exact paused rewind.
+      // The format is display-implementation-specific and never becomes
+      // emulated target state.
+      std::vector<unsigned char> frameData;
+      // Producer-side video state at the snapshot point. This can already
+      // contain scanlines from the next frame after the last completed one.
+      std::vector<unsigned char> producerFrameData;
+      int   producerLastLineNum;
+      bool  producerPrvFrameWasOdd;
       bool  valid;
       RewindState()
         : curLine(0), vsyncCnt(0), vsyncState(false), oddFrame(false),
+          producerLastLineNum(-2), producerPrvFrameWasOdd(false),
           valid(false)
       {
       }
@@ -180,6 +191,8 @@ namespace Ep128Emu {
      * If resetOutput is true, restoreRewindState() must also discard any
      * queued/previously buffered host frames before new line data is accepted.
      */
+    // Enable complete-frame mirrors only for Enterprise mounted IMG trial.
+    virtual void setRewindFrameCaptureEnabled(bool enabled) { (void) enabled; }
     virtual bool getRewindState(RewindState& state) const;
     virtual bool restoreRewindState(const RewindState& state,
                                     bool resetOutput);

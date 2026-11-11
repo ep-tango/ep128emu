@@ -171,14 +171,217 @@ namespace Ep128 {
 
   // --------------------------------------------------------------------------
 
+  bool Ep128VM::getRewindDiskState(RewindDiskState& out) const
+  {
+    // P3 host-only integration: all four drives and WD177x must be idle.
+    // No partial checkpoint is ever returned after an unsafe transfer.
+    RewindDiskState tmp;
+    tmp.hostIOEpoch = getRewindHostIOEpoch();
+    for (int i = 0; i < 4; ++i) {
+      if (!floppyDrives[i].getRewindIdleState(tmp.drives[i]))
+        return false;
+    }
+    if (!wd177x.getRewindIdleState(tmp.controller, floppyDrives, 4))
+      return false;
+    if (getRewindHostIOEpoch() != tmp.hostIOEpoch)
+      return false;
+    out = tmp;
+    return true;
+  }
+
+  bool Ep128VM::canRestoreRewindDiskState(const RewindDiskState& s) const
+  {
+    if (getRewindHostIOEpoch() != s.hostIOEpoch)
+      return false;
+    for (int i = 0; i < 4; ++i) {
+      if (!floppyDrives[i].canRestoreRewindIdleState(s.drives[i]))
+        return false;
+    }
+    // WD177x has no externally-visible side effects in the preflight.
+    return wd177x.canRestoreRewindIdleState(
+        s.controller, floppyDrives, 4);
+  }
+
+  bool Ep128VM::restoreRewindDiskState(const RewindDiskState& s)
+  {
+    // Explicit two-phase preflight; no partial drive mutation on an
+    // ordinary mismatch. Caller must own the VMThread exclusive lock.
+    if (!canRestoreRewindDiskState(s))
+      return false;
+    for (int i = 0; i < 4; ++i) {
+      if (!floppyDrives[i].restoreRewindIdleState(s.drives[i]))
+        return false; // invariant failure: VMThread lock is required
+    }
+    return wd177x.restoreRewindIdleState(s.controller, floppyDrives, 4);
+  }
+
+  bool Ep128VM::getIsRewindDirectFrameRequired() const
+  {
+    for (int i = 0; i < 4; ++i)
+      if (floppyDrives[i].haveDisk())
+        return true;
+    return false;
+  }
+
+  unsigned int Ep128VM::getRewindUnavailableReason() const
+  {
+    // IDE stays guest-visible when mounted. An SDExt image path alone is
+    // NOT guest-visible if the SD expansion is disabled/unmapped.
+    for (int i = 0; i < 4; ++i)
+      if (rewindAuxMediaMounted[i])
+        return 1U;
+#ifdef ENABLE_SDEXT
+    if (rewindAuxMediaMounted[4] && sdext.isSDExtSegment(0x07U))
+      return 1U;
+#endif
+    if (z80.hasOpenFiles())
+      return 2U; // Host FILE: channel is open.
+    if (haveTape() && getTapeButtonState() != 0 && getIsTapeMotorOn())
+      return 3U;
+    if (spectrumEmulatorEnabled)
+      return 4U;
+    return 5U; // Unrestorable floppy/FDC or other external media.
+  }
+
   bool Ep128VM::getIsRewindRestoreSupported() const
   {
+    // Only regular Enterprise IMG files with quiescent WD177x and a
+    // completed-frame host-video checkpoint are eligible. Never replay
+    // a disk operation to reconstruct the video while browsing history.
+    if (z80.hasOpenFiles() || spectrumEmulatorEnabled)
+      return false;
+    if (haveTape() && getTapeButtonState() != 0 && getIsTapeMotorOn())
+      return false;
+    for (int i = 0; i < 4; ++i)
+      if (rewindAuxMediaMounted[i])
+        return false; // Guest-visible IDE state cannot be rewound.
+#ifdef ENABLE_SDEXT
+    if (rewindAuxMediaMounted[4] && sdext.isSDExtSegment(0x07U))
+      return false; // Active SDExt media remains an external I/O owner.
+#endif
+    RewindDiskState d;
+    return getRewindDiskState(d);
+  }
+
+  uint64_t Ep128VM::getRewindHostIOEpoch() const
+  {
+    // Write barrier is observed by VMThread before it publishes a new
+    // frame. Mount/eject and host FILE: are tracked separately.
+    uint64_t n = rewindHostIOEpoch;
+    for (int i = 0; i < 4; ++i) {
+      n += floppyDrives[i].getMediaWriteEpoch();
+      // Detect external replacement and in-place changes between frames.
+      n ^= (floppyDrives[i].getRewindImageIdentity() << (i + 1));
+    }
+    return n;
+  }
+
+  void Ep128VM::setRewindRenderMode(bool enabled)
+  {
+    rewindRenderMode = enabled;
+    for (int i = 0; i < 4; ++i)
+      floppyDrives[i].setRewindWriteGuard(enabled);
+  }
+
+  void Ep128VM::setWorkingDirectory(const std::string& dirName_)
+  {
+    Ep128Emu::VirtualMachine::setWorkingDirectory(dirName_);
+    ++rewindHostIOEpoch;
+  }
+
+  void Ep128VM::setEnableFileIO(bool enabled)
+  {
+    Ep128Emu::VirtualMachine::setEnableFileIO(enabled);
+    ++rewindHostIOEpoch;
+  }
+
+  // Host-only v3 rewind disk envelope. Never touches the .ep128s format.
+  static void diskRewindPut(std::vector<unsigned char>& v,
+                            uint64_t n, unsigned int bytes)
+  {
+    for (unsigned int i = 0; i < bytes; ++i)
+      v.push_back(uint8_t(n >> (8U * i)));
+  }
+
+  static bool diskRewindGet(const std::vector<unsigned char>& v,
+                             size_t& pos, uint64_t& n,
+                             unsigned int bytes)
+  {
+    if (pos > v.size() || size_t(bytes) > v.size() - pos)
+      return false;
+    n = 0U;
+    for (unsigned int i = 0; i < bytes; ++i)
+      n |= uint64_t(v[pos++]) << (8U * i);
     return true;
+  }
+
+  static bool diskRewindDecode(
+      const std::vector<unsigned char>& v,
+      Ep128VM::RewindDiskState& out)
+  {
+    if (v.size() < 14U || v[0] != 3U || v.size() > 4608U)
+      return false;
+    size_t pos = 14U;
+    uint64_t n = 0U;
+    if (!diskRewindGet(v, pos, out.hostIOEpoch, 8))
+      return false;
+    for (int i = 0; i < 4; ++i) {
+      Ep128Emu::FloppyDrive::RewindIdleState& d = out.drives[i];
+      if (!diskRewindGet(v, pos, d.mediaWriteEpoch, 8) ||
+          !diskRewindGet(v, pos, d.mediaMountEpoch, 8))
+        return false;
+      uint8_t *byteFields[] = { &d.currentTrack, &d.currentSide,
+                                &d.nTracks, &d.nSides, &d.nSectorsPerTrack };
+      for (size_t k = 0; k < 5U; ++k) {
+        if (!diskRewindGet(v, pos, n, 1))
+          return false;
+        *byteFields[k] = uint8_t(n);
+      }
+      if (!diskRewindGet(v, pos, n, 2))
+        return false;
+      d.bytesPerSector = uint16_t(n);
+      bool *boolFields[] = { &d.mounted, &d.writeProtected,
+                            &d.diskChangeFlag, &d.motorOnInput, &d.isMotorOn };
+      for (size_t k = 0; k < 5U; ++k) {
+        if (!diskRewindGet(v, pos, n, 1) || n > 1U)
+          return false;
+        *boolFields[k] = bool(n);
+      }
+      if (!diskRewindGet(v, pos, n, 4))
+        return false;
+      d.ledStateCounter = uint32_t(n);
+      if (!diskRewindGet(v, pos, n, 2) || n > 1024U ||
+          pos > v.size() || size_t(n) > v.size() - pos)
+        return false;
+      d.imageFileName.assign(v.begin() + pos, v.begin() + pos + size_t(n));
+      pos += size_t(n);
+    }
+    Ep128Emu::WD177x::RewindIdleState& w = out.controller;
+    if (!diskRewindGet(v, pos, n, 1) || n > 4U)
+      return false;
+    w.selectedDrive = int(n) - 1;
+    uint8_t *wdBytes[] = { &w.command, &w.status, &w.track, &w.sector,
+                            &w.data, &w.writeTrackSectorsRemaining,
+                            &w.writeTrackState };
+    for (size_t k = 0; k < 7U; ++k) {
+      if (!diskRewindGet(v, pos, n, 1))
+        return false;
+      *wdBytes[k] = uint8_t(n);
+    }
+    bool *wdFlags[] = { &w.irq, &w.drq, &w.isWD1773, &w.steppingIn,
+                         &w.busyFlagHackEnabled, &w.busyFlagHack };
+    for (size_t k = 0; k < 6U; ++k) {
+      if (!diskRewindGet(v, pos, n, 1) || n > 1U)
+        return false;
+      *wdFlags[k] = bool(n);
+    }
+    return pos == v.size();
   }
 
   bool Ep128VM::getRewindRuntimeState(
       Ep128Emu::VirtualMachine::RewindRuntimeState& state) const
   {
+    state.valid = false;
     state.cyclePhaseLow = nickCyclesRemainingL;
     state.cyclePhaseHigh = nickCyclesRemainingH;
     // Preserve sound-only click debounce and the ACCEPTED 0.34 motor
@@ -196,19 +399,100 @@ namespace Ep128 {
           uint8_t(tapeRelayEngagementCount >> (8 * i));
     }
     state.machineData[13] = uint8_t(getIsTapeMotorOn());
+    bool haveMountedDisk = false;
+    for (int i = 0; i < 4; ++i)
+      haveMountedDisk = (haveMountedDisk || floppyDrives[i].haveDisk());
+    if (haveMountedDisk) {
+      RewindDiskState d;
+      if (!getRewindDiskState(d))
+        return false;  // no checkpoint from an in-flight controller
+      state.machineData[0] = 3U;
+      diskRewindPut(state.machineData, d.hostIOEpoch, 8);
+      for (int i = 0; i < 4; ++i) {
+        const Ep128Emu::FloppyDrive::RewindIdleState& f = d.drives[i];
+        if (f.imageFileName.size() > 1024U)
+          return false;
+        diskRewindPut(state.machineData, f.mediaWriteEpoch, 8);
+        diskRewindPut(state.machineData, f.mediaMountEpoch, 8);
+        const uint8_t bytes[] = { f.currentTrack, f.currentSide, f.nTracks,
+                                  f.nSides, f.nSectorsPerTrack };
+        for (size_t k = 0; k < 5U; ++k)
+          diskRewindPut(state.machineData, bytes[k], 1);
+        diskRewindPut(state.machineData, f.bytesPerSector, 2);
+        const bool flags[] = { f.mounted, f.writeProtected, f.diskChangeFlag,
+                               f.motorOnInput, f.isMotorOn };
+        for (size_t k = 0; k < 5U; ++k)
+          diskRewindPut(state.machineData, flags[k] ? 1U : 0U, 1);
+        diskRewindPut(state.machineData, f.ledStateCounter, 4);
+        diskRewindPut(state.machineData, f.imageFileName.size(), 2);
+        state.machineData.insert(state.machineData.end(),
+                                 f.imageFileName.begin(), f.imageFileName.end());
+      }
+      const Ep128Emu::WD177x::RewindIdleState& w = d.controller;
+      diskRewindPut(state.machineData, unsigned(w.selectedDrive + 1), 1);
+      const uint8_t wdBytes[] = { w.command, w.status, w.track, w.sector, w.data,
+                                  w.writeTrackSectorsRemaining, w.writeTrackState };
+      for (size_t k = 0; k < 7U; ++k)
+        diskRewindPut(state.machineData, wdBytes[k], 1);
+      const bool wdFlags[] = { w.irq, w.drq, w.isWD1773, w.steppingIn,
+                               w.busyFlagHackEnabled, w.busyFlagHack };
+      for (size_t k = 0; k < 6U; ++k)
+        diskRewindPut(state.machineData, wdFlags[k] ? 1U : 0U, 1);
+    }
     state.valid = true;
     return true;
+  }
+
+  bool Ep128VM::canRestoreRewindRuntimeState(
+      const Ep128Emu::VirtualMachine::RewindRuntimeState& state) const
+  {
+    if (!state.valid)
+      return false;
+    if (state.machineData.size() == 14U && state.machineData[0] == 2U) {
+      // No disk checkpoint must not restore across a newly mounted disk.
+      for (int i = 0; i < 4; ++i)
+        if (floppyDrives[i].haveDisk())
+          return false;
+      return true;
+    }
+    if (state.machineData.size() == 5U && state.machineData[0] == 1U) {
+      for (int i = 0; i < 4; ++i)
+        if (floppyDrives[i].haveDisk())
+          return false;
+      return true;
+    }
+    RewindDiskState disk;
+    return diskRewindDecode(state.machineData, disk)
+           && canRestoreRewindDiskState(disk);
   }
 
   bool Ep128VM::restoreRewindRuntimeState(
       const Ep128Emu::VirtualMachine::RewindRuntimeState& state)
   {
-    if (!state.valid)
+    if (!canRestoreRewindRuntimeState(state))
       return false;
+    const bool diskEnvelope = (state.machineData.size() >= 14U &&
+                               state.machineData[0] == 3U);
+    if (diskEnvelope) {
+      RewindDiskState d;
+      if (!diskRewindDecode(state.machineData, d) ||
+          !canRestoreRewindDiskState(d))
+        return false;  // no runtime state is modified on a bad envelope
+      if (!restoreRewindDiskState(d))
+        return false;
+    }
+    else if (state.machineData.size() != 14U ||
+             state.machineData[0] != 2U) {
+      // Preserve the legacy v1 runtime used by older headless tests.
+      if (!(state.machineData.size() == 5U &&
+            state.machineData[0] == 1U))
+        return false;
+    }
     nickCyclesRemainingL = state.cyclePhaseLow;
     nickCyclesRemainingH = state.cyclePhaseHigh;
     cancelPendingTapeRelayRelease();
-    if (state.machineData.size() == 14U && state.machineData[0] == 2U) {
+    if ((state.machineData.size() == 14U && state.machineData[0] == 2U) ||
+        diskEnvelope) {
       uint32_t startup = 0U, pending = 0U, engagements = 0U;
       for (int i = 0; i < 4; i++) {
         startup |= uint32_t(state.machineData[size_t(i + 1)]) << (8 * i);

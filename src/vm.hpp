@@ -661,11 +661,17 @@ namespace Ep128Emu {
      * path that does not perform normal snapshot-load external-I/O resets.
      */
     virtual bool getIsRewindRestoreSupported() const;
+    virtual unsigned int getRewindUnavailableReason() const;
+    virtual bool getIsRewindDirectFrameRequired() const;
+    // External host-I/O boundaries must not be crossed by rewind snapshots.
+    virtual uint64_t getRewindHostIOEpoch() const;
+    virtual void setRewindRenderMode(bool enabled);
     /*!
      * Save/restore runtime timing phase that is intentionally not part of
      * normal snapshot files but is required for cycle-stable rewind.
      */
     virtual bool getRewindRuntimeState(RewindRuntimeState& state) const;
+    virtual bool canRestoreRewindRuntimeState(const RewindRuntimeState& state) const;
     virtual bool restoreRewindRuntimeState(const RewindRuntimeState& state);
     /*!
      * Enable/disable rewind restore semantics around in-memory state loading.
