@@ -7,8 +7,6 @@ Supported release packages:
   * Linux x86_64 (generic glibc package, built on Debian 12)
 
 Previous public custom release: 2.1 (2026-10-30).
-The version number 2.0.12 was used for INTERNAL development only;
-there was no separate public 2.0.12 release.
 Original ep128emu 2.0.11.2 by Istvan Varga; this fork adds
 cross-platform features and fixes. See NEWS for change history.
 Public downloads: https://github.com/ep-tango/ep128emu/releases/tag/v2.1.1

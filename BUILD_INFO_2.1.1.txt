@@ -2,7 +2,6 @@ EP128Emu 2.1.1 - public build information
 
 Public release: https://github.com/ep-tango/ep128emu/releases/tag/v2.1.1
 Previous public release: v2.1 (2026-10-30).
-Version 2.0.12 was internal development only, never a public release.
 
 Release targets (all compiled from the same source commit):
 - macOS Universal: Apple Silicon ARM64 + Intel x86_64 (FLTK 1.4.5).

@@ -1,51 +1,7 @@
-Changes in public version 2.1.1 (2026-11-11)
----------------------------------------------
-  * five release targets: macOS Universal, macOS ARM64, Windows x64,
-    Windows x86 and generic Linux x86_64
-  * machine-specific icons in the macOS Dock and Windows taskbar
-  * complete factory ROM catalog/configuration coverage restored
-  * fixes and features developed since public custom version 2.1,
-    including rewind, media export, archive handling and portability
-  * short per-platform installer/archive filenames
-
-Previous public custom release: 2.1 (2026-10-30).
-The intermediate 2.0.12 was an INTERNAL development version only.
-
-Internal development history: 2.0.12 (NOT a public release)
-----------------------------------------------------------
-
-  * macOS ARM64: direct restart between Enterprise, ZX Spectrum, Amstrad CPC and Videoton TVC
-  * added configurable application shortcuts with direct key-combination capture
-  * added paused Next Frame and multi-machine Previous Frame / rewind navigation for Enterprise, ZX Spectrum, Amstrad CPC and Videoton TVC
-  * added Finder drag and drop and persistent Recent Files lists
-  * added runtime status, FPS and audio/video recording indicators
-  * added modern H.264 MP4 video capture and additional audio export formats
-  * macOS ARM64 package includes a self-contained source-built FFmpeg/x264 encoder
-  * added Pixel Perfect integer scaling mode
-  * added machine-type safety checks for snapshot, configuration and binary loading, with Switch & Load
-  * fixed Videoton TVC snapshot restore of mirrored 8 KiB ROM segments (0x02/0x04), preventing invalid ROM vectors after snapshot/rewind restore
-  * added persistent main-window positioning and coordinated auxiliary-window placement
-  * made Save workflows safer by enforcing the selected output file extension and enabling overwrite confirmation
-  * macOS shortcut labels now use the platform-native Option key name instead of Alt
-  * expanded paused Frame Navigation with frame-position/history-memory status, 100-frame jumps, oldest/latest endpoints and preserved recorded-future scrubbing
-  * added configurable rewind history capacity: 16, 32 or 64 MiB
-  * improved rewind Resume input reconciliation and navigation menu/shortcut presentation
-  * added Standard / Large menu-size selection and clearer Emulated machine / Frame Navigation menu naming
-  * added Archive Drag & Run for ZIP/RAR Enterprise COM/TRN packages, including multi-program selection and companion-file access
-  * added safe temporary Standard 128K Drag & Run mode when the current configuration cannot auto-run the selected program
-  * added native macOS IOHID game-controller input without requiring Input Monitoring permission
-  * fixed Pixel Perfect startup instability on external 4K displays and added automatic largest-fitting integer-size selection
-  * fixed macOS oversized preset-window geometry so tall windows no longer jump when titlebar dragging begins
-  * fixed Archive Drag & Run FILE: runtime-directory handoff across explicit configuration changes
-  * restored high-speed performance: exact rewind capture is suspended above 200% and in No limit mode, allowing the 400% preset and multi-thousand-percent No limit speeds again
-  * improved demo recording status placement and added a configurable Record demo shortcut (Option+M by default)
-  * clarified snapshot/demo runtime RAM/ROM state versus the retained base/reset machine configuration, with a larger Machine Configuration window
-  * hardened VM-thread lock/unlock synchronization, eliminating an intermittent "emulation thread does not respond" race during rapid configuration/reset transitions
-  * protected Archive Drag & Run temporary Standard 128K state from leaking into Save as ASCII configuration exports
-
-  These 2.0.12-era features were developed internally and later incorporated
-  into public custom releases; 2.0.12 itself was never publicly released.
-  Original emulator by Istvan Varga; custom macOS enhancements by Attila G.
+Changes in version 2.1.1
+------------------------
+Editorial draft — the v2.1 to v2.1.1 changes are pending selection.
+Do not publish this draft until the maintainer has approved the NEWS items.
 
 Changes in version 2.0.11.2
 ---------------------------
