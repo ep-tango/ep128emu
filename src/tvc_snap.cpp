@@ -27,6 +27,11 @@ namespace TVC64 {
 
   void TVC64VM::saveState(Ep128Emu::File& f)
   {
+#ifdef ENABLE_A02_2DFX
+    // A02 bus/clock trial cannot serialize device RRAM or guest demo writes.
+    if (a02Device.touched())
+      throw Ep128Emu::Exception("2DFX active: snapshot/rewind unavailable in A02 trial");
+#endif
     memory.saveState(f);
     ioPorts.saveState(f);
     crtc.saveState(f);
@@ -77,6 +82,11 @@ namespace TVC64 {
 
   void TVC64VM::recordDemo(Ep128Emu::File& f)
   {
+#ifdef ENABLE_A02_2DFX
+    // A02 bus/clock trial cannot serialize device RRAM or guest demo writes.
+    if (a02Device.touched())
+      throw Ep128Emu::Exception("2DFX active: demo unavailable in A02 trial");
+#endif
     // turn off tape motor, stop any previous demo recording or playback,
     // and reset keyboard state
     tapeInputSignal = 0;
@@ -125,6 +135,11 @@ namespace TVC64 {
 
   bool TVC64VM::getIsRewindRestoreSupported() const
   {
+#ifdef ENABLE_A02_2DFX
+    // 2DFX RRAM is external to the current bounded VM rewind snapshot.
+    if (a02Device.touched())
+      return false;
+#endif
     if (z80.hasOpenHostFile())
       return false;
     for (int i=0; i<4; i++) {
@@ -185,6 +200,11 @@ namespace TVC64 {
 
   void TVC64VM::loadState(Ep128Emu::File::Buffer& buf)
   {
+#ifdef ENABLE_A02_2DFX
+    // A02 bus/clock trial cannot serialize device RRAM or guest demo writes.
+    if (a02Device.touched())
+      throw Ep128Emu::Exception("2DFX active: snapshot/rewind unavailable in A02 trial");
+#endif
     buf.setPosition(0);
     // check version number
     unsigned int  version = buf.readUInt32();
@@ -280,6 +300,11 @@ namespace TVC64 {
 
   void TVC64VM::loadDemo(Ep128Emu::File::Buffer& buf)
   {
+#ifdef ENABLE_A02_2DFX
+    // A02 bus/clock trial cannot serialize device RRAM or guest demo writes.
+    if (a02Device.touched())
+      throw Ep128Emu::Exception("2DFX active: demo unavailable in A02 trial");
+#endif
     buf.setPosition(0);
     // check version number
     unsigned int  version = buf.readUInt32();

@@ -19,6 +19,7 @@ buildRelease = not enableDebug and int(ARGUMENTS.get('release', 1))
 useLuaJIT = int(ARGUMENTS.get('luajit', 0))
 cmosZ80 = int(ARGUMENTS.get('z80cmos', 0))
 # build with experimental SD card emulation
+enableA02HW = int(ARGUMENTS.get('a02hw', 0))
 enableSDExt = int(ARGUMENTS.get('sdext', 1))
 # enable SID card emulation
 enableReSID = int(ARGUMENTS.get('resid', 1))
@@ -125,9 +126,17 @@ macPinnedFLTKPrefix = None
 macPinnedFLTKConfig = None
 macPinnedFLTKFluid = None
 if hostMacBuild:
-    macPinnedFLTKPrefix = os.path.realpath(os.path.expanduser(
-        '~/Developer/EP128/EP128EMU/third_party/fltk-1.4.5'))
-    macNativeFLTKPrefix = macPinnedFLTKPrefix
+    # The prebuilt pinned FLTK 1.4.5 installation is an external build input,
+    # never a developer-specific absolute path embedded in released sources.
+    # Universal builds use the fat FLTK libraries but still require the native
+    # 1.4.5 'fluid' executable, supplied explicitly by the builder.
+    nativeFLTK = (os.environ.get('EP128EMU_FLTK_NATIVE_PREFIX') or
+                  os.environ.get('EP128EMU_FLTK_PREFIX'))
+    if not nativeFLTK:
+        Exit('FLTK_PIN_PREFIX_REQUIRED: set EP128EMU_FLTK_NATIVE_PREFIX '
+             'to a local pinned FLTK 1.4.5 install')
+    macNativeFLTKPrefix = os.path.realpath(os.path.expanduser(nativeFLTK))
+    macPinnedFLTKPrefix = macNativeFLTKPrefix
     # Explicit 2.2 trial opt-in only. Keep the accepted ARM64 prefix untouched.
     # The alternate FLTK is built from the *same pinned 1.4.5 source tarball*.
     # The native ARM64 fluid remains the build-time GUI compiler.
@@ -447,6 +456,11 @@ if userMinMacosVersion:
     ep128emuLibEnvironment.Append(CCFLAGS = [macMinFlag])
     ep128emuLibEnvironment.Append(LINKFLAGS = [macMinFlag])
 
+if enableA02HW:
+    # All consumer TUs must agree on opt-in VM class layout.
+    ep128emuLibEnvironment.Append(CPPDEFINES = ['ENABLE_A02_2DFX'])
+    ep128emuLibEnvironment.Append(CPPPATH = ['./third_party/2dfxemu/include'])
+
 ep128emuGUIEnvironment = copyEnvironment(ep128emuLibEnvironment)
 if mingwCrossCompile:
     ep128emuGUIEnvironment.Prepend(LINKFLAGS = ['-mwindows'])
@@ -681,10 +695,60 @@ if disableOpenGL:
 ep128emuLib = ep128emuLibEnvironment.StaticLibrary('ep128emu',
                                                    ep128emuLibSources)
 
+
+# A02 isolated optional 2DFX portable C core. No guest VM/port/IRQ hooks.
+# Disabled by default on all five platforms; explicit 'a02core=1' builds
+# only the independently licensed core and enables the 'a02core' alias.
+# a02hw=1 is a separate research-only I/O/clock integration; never default.
+if enableA02HW or int(ARGUMENTS.get('a02core', 0)):
+    a02CoreEnvironment = copyEnvironment(ep128emuLibEnvironment)
+    a02CoreEnvironment.Append(CPPPATH = [
+        './third_party/2dfxemu/include',
+        './third_party/2dfxemu/core',
+        './third_party/2dfxemu/assets',
+        './third_party/2dfxemu/firmware_eggs',
+        './third_party/2dfxemu/firmware_eggs/portable'])
+    a02CoreEnvironment.Append(CCFLAGS = ['-std=c99'])
+    a02CoreSources = [
+        'third_party/2dfxemu/assets/logo_2dfx_asset.c',
+        'third_party/2dfxemu/core/twodfx_3d.c',
+        'third_party/2dfxemu/core/twodfx_emu.c',
+        'third_party/2dfxemu/core/twodfx_raster.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C0_logo.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C1_benchmark.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C2_primitives.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C3_text.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C4_blit.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C5_pattern.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C6_tilemap.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C7_pong_basic.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C8_pong_wow.c',
+        'third_party/2dfxemu/firmware_eggs/egg_C9_wriggler.c',
+        'third_party/2dfxemu/firmware_eggs/egg_CA_boulder.c',
+        'third_party/2dfxemu/firmware_eggs/egg_CB_arcpie_benchmark.c',
+        'third_party/2dfxemu/firmware_eggs/egg_CC_diag.c',
+        'third_party/2dfxemu/firmware_eggs/egg_CD_blit_full.c',
+        'third_party/2dfxemu/firmware_eggs/egg_CE_layer.c',
+        'third_party/2dfxemu/firmware_eggs/egg_CF_tvc_bitpattern.c',
+        'third_party/2dfxemu/firmware_eggs/egg_D0_tvc_crisp_tearing.c',
+        'third_party/2dfxemu/firmware_eggs/egg_D1_ruler.c',
+        'third_party/2dfxemu/firmware_eggs/egg_D2_xy_offset.c',
+        'third_party/2dfxemu/firmware_eggs/egg_D3_elite_showcase.c',
+        'third_party/2dfxemu/firmware_eggs/egg_D4_3d_scope.c',
+        'third_party/2dfxemu/firmware_eggs/egg_D5_public_mesh.c',
+        'third_party/2dfxemu/firmware_eggs/egg_DF_graphics_test.c',
+        'third_party/2dfxemu/firmware_eggs/firmware_page.c',
+    ]
+    a02CoreLibrary = a02CoreEnvironment.StaticLibrary(
+        'build/a02/a02_2dfx', a02CoreSources)
+    Alias('a02core', a02CoreLibrary)
+
 # -----------------------------------------------------------------------------
 
 ep128LibEnvironment = copyEnvironment(ep128emuLibEnvironment)
 ep128LibEnvironment.Append(CPPPATH = ['./z80'])
+if enableA02HW:
+    ep128LibEnvironment.Append(CPPDEFINES = ['ENABLE_A02_2DFX'])
 sdextSources = []
 if enableSDExt:
     sdextSources = ['src/sdext.cpp']
@@ -738,6 +802,8 @@ cpc464Lib = cpc464LibEnvironment.StaticLibrary('cpc464', Split('''
 
 tvc64LibEnvironment = copyEnvironment(ep128emuLibEnvironment)
 tvc64LibEnvironment.Append(CPPPATH = ['./z80'])
+if enableA02HW:
+    tvc64LibEnvironment.Append(CPPDEFINES = ['ENABLE_A02_2DFX'])
 
 tvc64Lib = tvc64LibEnvironment.StaticLibrary('tvc64', Split('''
     src/tvc64vm.cpp
@@ -777,6 +843,8 @@ ep128emuEnvironment.Prepend(LIBS = [ep128emuLib])
 if enableReSID:
     ep128emuEnvironment.Prepend(LIBS = [residLib])
 ep128emuEnvironment.Prepend(LIBS = [ep128Lib, zx128Lib, cpc464Lib, tvc64Lib])
+if enableA02HW:
+    ep128emuEnvironment.Append(LIBS = [a02CoreLibrary])
 
 ep128emuSources = ['gui/gui.cpp', 'gui/shortcut_cfg.cpp', 'gui/archive_drop.cpp']
 if mingwCrossCompile:
@@ -881,6 +949,8 @@ if buildUtilities:
                        '''))
     epimgconvEnvironment.Prepend(LIBS = [epimgconvLib, compressLib,
                                          ep128Lib, ep128emuLib])
+    if enableA02HW:
+        epimgconvEnvironment.Append(LIBS = [a02CoreLibrary])
     if mingwCrossCompile and not disableOpenGL:
         epimgconvCLIEnvironment = copyEnvironment(epimgconvEnvironment)
         epimgconvCLIEnvironment['LINKFLAGS'].remove('-mwindows')
@@ -991,4 +1061,3 @@ if not mingwCrossCompile:
                              [instBinDir, instPixmapDir, instDesktopDir,
                               instDataDir, instROMDir, instConfDir,
                               instDiskDir])
-

@@ -183,6 +183,10 @@ namespace Ep128 {
     virtual ~Nick();
     static void convertPixelToRGB(uint8_t pixelValue,
                                   float& r, float& g, float& b);
+#ifdef ENABLE_A02_2DFX
+    // Read-only palette sampled from the actual NICK LPB for this scanline.
+    const uint8_t *getA02CurrentPalette() const { return lpb.palette; }
+#endif
     uint8_t readPort(uint16_t portNum);
     void writePort(uint16_t portNum, uint8_t value);
     uint8_t readPortDebug(uint16_t portNum) const;

@@ -64,6 +64,16 @@ class Ep128EmuGUI {open
   decl {int32_t oldSpeedPercentage;} {}
   decl {bool oldPauseFlag;} {}
   decl {bool runtimeHUDEnabled;} {}
+  decl {bool a02Enabled;} {}
+  decl {Fl_Box *a02LogoStatus;} {}
+  decl {Fl_Box *a02PowerLED;} {}
+  decl {bool a02EngineActive;} {}
+  decl {Fl_Window *a02DebugWindow;} {}
+  decl {Fl_Box *a02DebugStatusText;} {}
+  decl {Fl_Box *a02DebugLEDs[8];} {}
+  decl {int a02DebugLastStatus;} {}
+  decl {bool a02DebugLastEnabled;} {}
+  decl {bool a02DebugLastEngine;} {}
   decl {bool showInformationalDialogs;} {}
   decl {bool betaDOSAutoEnterOnReset;} {}
   decl {int betaDOSAutoEnterPolls;} {}
@@ -187,6 +197,7 @@ class Ep128EmuGUI {open
   decl {void setTapeMotorSpinUpDelay(int ms);} {}
   decl {unsigned int getEffectiveTapeMotorSpinUpDelayMs() const;} {}
   decl {void updateRecordingStatusDisplay();} {}
+  decl {void updateA02DebugPanel();} {}
   decl {void updateRuntimeStatusDisplay(const Ep128Emu::VMThread::VMThreadStatus& status);} {}
   decl {void syncRecordingStatusState();} {}
   decl {void updateDisplay(double t = 0.025);} {public
@@ -379,6 +390,7 @@ class Ep128EmuGUI {open
   decl {static void menuCallback_Machine_QuickCfgS1(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_QuickCfgS2(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_Configure(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_TwoDFXDebug(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_DpySize1(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_DpySize2(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_DpySize3(Fl_Widget *o, void *v);} {}
@@ -388,6 +400,7 @@ class Ep128EmuGUI {open
   decl {static void menuCallback_Options_MenuSizeLarge(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_DpyConfig(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_RuntimeHUD(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Machine_TwoDFX(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_InformationDialogs(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_SndIncVol(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_SndDecVol(Fl_Widget *o, void *v);} {}
@@ -570,6 +583,7 @@ class Ep128EmuGUI {open
   delete debugWindow;
   delete aboutWindow;
   delete shortcutConfigWindow;
+  if (a02DebugWindow) { a02DebugWindow->hide(); delete a02DebugWindow; }
   delete mainWindow;
   restoreArchivePersistentConfiguration();
   config.vm.speedPercentage = 100U;

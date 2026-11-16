@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-PREFIX="${EP128EMU_FLTK_PREFIX:-$HOME/Developer/EP128/EP128EMU/third_party/fltk-1.4.5}"
+PREFIX="${EP128EMU_FLTK_PREFIX:?EP128EMU_FLTK_PREFIX must identify the pinned FLTK 1.4.5 installation}"
 REAL="${EP128EMU_FLTK_CONFIG:-$PREFIX/bin/fltk-config}"
 SDK="$(xcrun --show-sdk-path)"
 OUT="$("$REAL" "$@")"

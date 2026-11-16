@@ -32,6 +32,9 @@
 #include "vm.hpp"
 #include "ep_fdd.hpp"
 #include "wd177x.hpp"
+#ifdef ENABLE_A02_2DFX
+#  include "a02_2dfx_device.hpp"
+#endif
 #ifdef ENABLE_SDEXT
 #  include "sdext.hpp"
 #endif
@@ -253,6 +256,10 @@ namespace Ep128 {
     int8_t    mouseDeltaY;
     uint8_t   mouseButtonState;
     uint8_t   mouseWheelDelta;          // b0..b3: vertical, b4..b7: horizontal
+#ifdef ENABLE_A02_2DFX
+    Ep128Emu::A02TwoDFX a02Device;
+    void      a02UpdateIRQ();
+#endif
 #ifdef ENABLE_SDEXT
     SDExt     sdext;
 #endif
@@ -307,6 +314,11 @@ namespace Ep128 {
                                       uint16_t addr, uint8_t value);
     static uint8_t midiPortDebugReadCallback(void *userData, uint16_t addr);
 #endif
+#ifdef ENABLE_A02_2DFX
+    static uint8_t a02PortReadCallback(void *, uint16_t);
+    static uint8_t a02PortDebugReadCallback(void *, uint16_t);
+    static void a02PortWriteCallback(void *, uint16_t, uint8_t);
+#endif
     static uint8_t cmosMemoryIOReadCallback(void *userData, uint16_t addr);
     static void cmosMemoryIOWriteCallback(void *userData,
                                           uint16_t addr, uint8_t value);
@@ -347,6 +359,16 @@ namespace Ep128 {
    public:
     Ep128VM(Ep128Emu::VideoDisplay&, Ep128Emu::AudioOutput&);
     virtual ~Ep128VM();
+#ifdef ENABLE_A02_2DFX
+    // Experimental read-only frame-clock diagnostic; no guest state/ABI
+    // change in the default-off five-platform build.
+    uint64_t getA02VideoFrameCount() const { return a02Device.videoFrames(); }
+    bool getA02Enabled() const { return a02Device.enabled(); }
+    bool getA02GuestBusTouched() const { return a02Device.guestBusTouched(); }
+    bool getA02EngineActive() const { return a02Device.engineActive(); }
+    uint8_t getA02StatusSnapshot() const { return a02Device.statusSnapshot(); }
+    void setA02Enabled(bool enabled);
+#endif
     /*!
      * Run emulation for the specified number of microseconds.
      */

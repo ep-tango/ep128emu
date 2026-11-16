@@ -1,0 +1,267 @@
+{
+  "archive_sha256": "8b8e53421f45853ea9e3bbcbfc9914636e988eb39439b37984f151b59521b8e3",
+  "commit": "3ed859c876d9c0ff900717f0af0e68f6d80dc202",
+  "coverage_notes": "A02 exact source restoration C9/D3/D4/D5 after owner user instruction. Preserve vendor ASSET_LICENSES.md notes without treating disputed provenance as user-approved omission. See docs/A02_DEMO_OMISSION_DECISION_CORRECTION_20261116.md.",
+  "excluded_prefixes": [],
+  "files": {
+    "adapter/ep128emu_twodfx_adapter.hpp": {
+      "upstream_sha256": "75bc719cc331ec9784e0f95458e105ff6072da0d3f820a61721c83ef610ab939"
+    },
+    "assets/2dfx_builtin_logo.h": {
+      "upstream_sha256": "2deab68089489370b03953c3c30ec4e8c50c493c094a4b897666b9b42c5d21fe"
+    },
+    "assets/logo_2dfx_asset.c": {
+      "patched_sha256": "7de64aa758bf049f93c8122a6c81201c982ee3c2d01c898d9c87f85a09f59cb9",
+      "upstream_sha256": "cdffa05353f35a3f5d3258f28c5646f2cc61d917817f5a0186d6a4948af79c78"
+    },
+    "assets/logo_2dfx_asset.h": {
+      "upstream_sha256": "95b37ea5858eb50d3cf817f096931e5dde3f8ecea239ac969107af9667d51c1a"
+    },
+    "core/twodfx_2d_extra.inc": {
+      "upstream_sha256": "6744af096547910dad4570555ecaed387c0d879ec03584ec545d2b16173bcd67"
+    },
+    "core/twodfx_3d.c": {
+      "upstream_sha256": "8b3736a41cc4411ca5235d63a1377f48d7c59ecc3f039baf0cb98631a876a94b"
+    },
+    "core/twodfx_3d.h": {
+      "upstream_sha256": "aeb5d2a0c5ae484ce0c9bcac5b624ab1fff1dd7c001ce77cb790a5cfeedcfc10"
+    },
+    "core/twodfx_emu.c": {
+      "patched_sha256": "7c0eaefe6f7545674edf1e453d574731bd7fc4331e4b73377481560891e2cd0f",
+      "upstream_sha256": "3e6d31eaec7ebc1174f1a42afe778e5d555de878cacca840389a6c44b7184d1f"
+    },
+    "core/twodfx_public_api_adapter.inc": {
+      "upstream_sha256": "abe0488f08f7a6ed336d45221c3e7a169eff088cb6807a7843870b7f2f3951a7"
+    },
+    "core/twodfx_raster.c": {
+      "upstream_sha256": "830b7d39ed77c106e48ae4d37e336a3b50f703ed5f97be7c70cbab8c200fcb75"
+    },
+    "core/twodfx_raster.h": {
+      "upstream_sha256": "d9d1a12e41affc4bf21bc2e84c0d8a03512c2077b6130db8afbcc2e71918a0d0"
+    },
+    "core/twodfx_source_eggs.inc": {
+      "upstream_sha256": "5b9c3113cfe3f2a5037ca35107ca637e86e8da46881f805f2c4fdd222b6241bd"
+    },
+    "firmware_eggs/2dfx.h": {
+      "upstream_sha256": "a0e14db4db615d98fa1e7e00557090fa5d6e546e825d8f964585fa258cf87c4c"
+    },
+    "firmware_eggs/2dfx_builtin_logo.h": {
+      "upstream_sha256": "98fc659bff3ff159752f30956fea858968c6d1108d2165db038538cd976058cb"
+    },
+    "firmware_eggs/LICENSE_SCOPE.md": {
+      "upstream_sha256": "04cef611866282dfa0e37bd5cd39da15b84d5a004fb06df6c592f9f9d2e87063"
+    },
+    "firmware_eggs/ORIGIN_SHA256.json": {
+      "upstream_sha256": "eed34d7c83ae0f5b64fa7e467e49570763952ef5afb829eff1d4cb6a624f3bd4"
+    },
+    "firmware_eggs/README.md": {
+      "upstream_sha256": "7e9bd1aa9e7a8bcf477bc12b3bf5732cf8290fa28a2cb56854cadb5f15dd2443"
+    },
+    "firmware_eggs/egg_C0_logo.c": {
+      "upstream_sha256": "7f689b629847e492b5de3aa438dd308574920068d0a9b9788356b172f3f84a07"
+    },
+    "firmware_eggs/egg_C0_logo.h": {
+      "upstream_sha256": "50dd5b772725f1cb850c2b2375ddd7554ac965f5ca321c9d047de3a2f92de660"
+    },
+    "firmware_eggs/egg_C0_logo_assets.h": {
+      "patched_sha256": "9d26b50f22b33a29650317030f3110ccdc62aa5e9c22da316f8a31ad75d6b000",
+      "upstream_sha256": "0fd3991937c3d8059c9345c1335dd54346c1208bc0a61b2be16cd4ac69fd8ef6"
+    },
+    "firmware_eggs/egg_C1_benchmark.c": {
+      "upstream_sha256": "88bc1f700b27df602fe199326ea76ba4a9f7ca2c1f9a5e907c9543bff2ea4a6c"
+    },
+    "firmware_eggs/egg_C1_benchmark.h": {
+      "upstream_sha256": "ca1e8c7b9571f41841abef96e373a3f4869c394ab59a1e64c491a50522d51fd1"
+    },
+    "firmware_eggs/egg_C1_benchmark_assets.h": {
+      "upstream_sha256": "a30dc9e19b511b09d7a159ae60f94faef69c4e9b00095e44a1a43b54036861a8"
+    },
+    "firmware_eggs/egg_C2_primitives.c": {
+      "upstream_sha256": "70bf49486e434c4b565a42f7310bd06fc6c8563bf6a2fa790ea6e49aecdd28a3"
+    },
+    "firmware_eggs/egg_C2_primitives.h": {
+      "upstream_sha256": "3909012d54bc7bf8d40ef9ae78f49b3eae51370fa475b0312480be0045bb80d1"
+    },
+    "firmware_eggs/egg_C3_text.c": {
+      "upstream_sha256": "091957b079dd467a80e18ce2485abdb61e6ee078911e82bf4edca2a3d04fcd97"
+    },
+    "firmware_eggs/egg_C3_text.h": {
+      "upstream_sha256": "f856ca2abad6234c3b3d301cb6083eb6c1703fa08e786162d5b611c0c379479a"
+    },
+    "firmware_eggs/egg_C3_text_assets.h": {
+      "upstream_sha256": "28f373d835df4c1934bdaed807b7c0e489db5da17667bf8b0baedb1582c15420"
+    },
+    "firmware_eggs/egg_C3_text_fonts.h": {
+      "upstream_sha256": "415f7e691a76cbe4680ab5ba75c507f239c485689d5a553d3d3740e27364c665"
+    },
+    "firmware_eggs/egg_C4_blit.c": {
+      "upstream_sha256": "cd4401d89d4e25998d5ad336b20f3a279cc5ffab6cd6baa07d2304da49dd997a"
+    },
+    "firmware_eggs/egg_C4_blit.h": {
+      "upstream_sha256": "192576c77cb58e6537ce45e7cc758a1343e166e5721a522f706fc1c78cad1492"
+    },
+    "firmware_eggs/egg_C4_blit_assets.h": {
+      "upstream_sha256": "adcd61f802745b370ccd0d1f74f51ca8aac384ea6879f72277319f5ae930b837"
+    },
+    "firmware_eggs/egg_C5_pattern.c": {
+      "upstream_sha256": "f3a8c0bc7677f0108e792737e3e337eb769a1f9d7abcb935a1cc3dbcf8bb7256"
+    },
+    "firmware_eggs/egg_C5_pattern.h": {
+      "upstream_sha256": "9207ea114adfb03f03dbd78a659ec6ce37cbaab1a485cf4061611eb49cb06171"
+    },
+    "firmware_eggs/egg_C6_tilemap.c": {
+      "upstream_sha256": "e83f6552ef630e1652edf64a79fb22cc526215c7196427ab45923fcced864a4a"
+    },
+    "firmware_eggs/egg_C6_tilemap.h": {
+      "upstream_sha256": "72fc01a25383b3da1b858a5cdd80a1496a4525c532e8d25dfae0193259cf622e"
+    },
+    "firmware_eggs/egg_C7_pong_basic.c": {
+      "upstream_sha256": "6ca1f67e56fc85ef0f1fcca34ef10d2ea596a351a40285eab767efedc969d30c"
+    },
+    "firmware_eggs/egg_C7_pong_basic.h": {
+      "upstream_sha256": "a2775151fdb8fae27481d4dd5fa56868d19c2508b7a69f5d58bc8af62351612f"
+    },
+    "firmware_eggs/egg_C8_pong_wow.c": {
+      "upstream_sha256": "2c3d1f27098860d04d842e20f813cb75e099f26ac0e49281bc8d44dcb2975535"
+    },
+    "firmware_eggs/egg_C8_pong_wow.h": {
+      "upstream_sha256": "8116eeafb377af317f750602306e58efba0edfaaec6e2609310610de33ed3d9b"
+    },
+    "firmware_eggs/egg_C8_pong_wow_assets.h": {
+      "upstream_sha256": "89b673b062385861147c7cbf2fcad3c4f15bd307a66531ce98d397f9753104d9"
+    },
+    "firmware_eggs/egg_C9_wriggler.c": {
+      "upstream_sha256": "6700013e2416ff49aba76883ad557328c46c62f46c5eb0888533a77d0ec063c2"
+    },
+    "firmware_eggs/egg_C9_wriggler.h": {
+      "upstream_sha256": "2e18cfca3b5b2ac86b80e80ba19f121ee4afc1e3d514be6dc1dffd7f31dc4a95"
+    },
+    "firmware_eggs/egg_C9_wriggler_assets.h": {
+      "upstream_sha256": "2396cb0d2ebf2dd5aeb40465a038fcaed0308e4fd3e367f5385a376b02a624a2"
+    },
+    "firmware_eggs/egg_CA_boulder.c": {
+      "upstream_sha256": "02f48b59765c9171bdbf55aac87d1c723138549a09a8b9f24175bab03b1d3b9f"
+    },
+    "firmware_eggs/egg_CA_boulder.h": {
+      "upstream_sha256": "f590140b1bef65cc1173fb753b8614ea0afbf71a97c589070b6c2ceb858e6d8a"
+    },
+    "firmware_eggs/egg_CA_boulder_tiles.h": {
+      "upstream_sha256": "a29627fab3ec68a4115f7468f3c577ccd904a0bb680894f4c7fb84bf75090cb3"
+    },
+    "firmware_eggs/egg_CB_arcpie_benchmark.c": {
+      "upstream_sha256": "e3016ee5221cb4c83a085fbe0452bd4db029a9a9045564dd835a5d2daa048c1a"
+    },
+    "firmware_eggs/egg_CB_arcpie_benchmark.h": {
+      "upstream_sha256": "8bf672e71c5ffe01a99940255a9ad61894b4c0b49b993a7a23ef59ffec9b8130"
+    },
+    "firmware_eggs/egg_CC_diag.c": {
+      "upstream_sha256": "ff701f5300cbf15e196ddd5643eb0240360cb68af853c690f37f08509ad8ff81"
+    },
+    "firmware_eggs/egg_CC_diag.h": {
+      "upstream_sha256": "90c5549b0e899a8352ff83e313cc442a1506518e962f5f4cc69579d1832e0209"
+    },
+    "firmware_eggs/egg_CC_diag_assets.h": {
+      "upstream_sha256": "9a7d0a45162dce5eafccdf023e05b753738e5e470c2e20fbad43cca7515a53f6"
+    },
+    "firmware_eggs/egg_CD_blit_full.c": {
+      "upstream_sha256": "50ea1f7a096d76792a5593029d00794f409585b7e29c7e3a28d8bcfef5071fda"
+    },
+    "firmware_eggs/egg_CD_blit_full.h": {
+      "upstream_sha256": "6525fc182d2b37fbed3688036fed83a40476328b6d31c6130c4b33f1f3cc9ad2"
+    },
+    "firmware_eggs/egg_CE_layer.c": {
+      "upstream_sha256": "feceb690b12ad504cb1994f383ca3492c121c7eb0e800bcf413eba53b5abf70f"
+    },
+    "firmware_eggs/egg_CE_layer.h": {
+      "upstream_sha256": "a297d406ff059ad4826248bd37029397f50a72a9996bbd1d3b202310d04c3b95"
+    },
+    "firmware_eggs/egg_CF_tvc_bitpattern.c": {
+      "upstream_sha256": "c5e71ea8d5825dd3dc8365c285ce1e39350c61bac7045c18d45258425b36dfb2"
+    },
+    "firmware_eggs/egg_CF_tvc_bitpattern.h": {
+      "upstream_sha256": "fb84a458cf741fe2dc4f2ddcb6fa07864236380afe2171ee671a29ef30331ffd"
+    },
+    "firmware_eggs/egg_D0_tvc_crisp_tearing.c": {
+      "upstream_sha256": "f91d70ba9509b6fc0b128d0d18ea1e455993314e7d152b499ead9b9bffb1d0ad"
+    },
+    "firmware_eggs/egg_D0_tvc_crisp_tearing.h": {
+      "upstream_sha256": "1726fb5b2774d1fb6062a2d53562fd5212925994c8ddec5a4c18d3f013e2d07b"
+    },
+    "firmware_eggs/egg_D1_ruler.c": {
+      "upstream_sha256": "3a42f08061203f7ef1a8c25eb4741cc5232c4bd30e1218764438a9d6d586ffa2"
+    },
+    "firmware_eggs/egg_D1_ruler.h": {
+      "upstream_sha256": "053cf5784ac93089bbd013978dc4618790b1d2e1fa2ca54a41393382ca95d4a5"
+    },
+    "firmware_eggs/egg_D2_xy_offset.c": {
+      "upstream_sha256": "0062f91496c9c15c96abb573079b153d7ccea5f47c4c62bf89d3bd4ad0ab0b48"
+    },
+    "firmware_eggs/egg_D2_xy_offset.h": {
+      "upstream_sha256": "e5512a916d1a6aab50e80f3d54e7fbb3ad2782ae18db4592a110a1ac8c4e6358"
+    },
+    "firmware_eggs/egg_D3_elite_showcase.c": {
+      "upstream_sha256": "8c93eb333ceaa1c9f8c6bad2a547849bd27f80b28a03f3618cf00418414fdb3e"
+    },
+    "firmware_eggs/egg_D3_elite_showcase.h": {
+      "upstream_sha256": "f62b720f8662f96e5d7a5b74252ad29d22d36ac2f7300a39868ec3c6a639ade1"
+    },
+    "firmware_eggs/egg_D3_elite_showcase_data.h": {
+      "upstream_sha256": "2456c554efee37efc309c6da3596ce332a060f45323a8b21ad7058527e8fcb4d"
+    },
+    "firmware_eggs/egg_D4_3d_scope.c": {
+      "upstream_sha256": "307ae4fe976bc5d693a9254c3747391ea3fa59f6c5c70a535c6bd69aa3894240"
+    },
+    "firmware_eggs/egg_D4_3d_scope.h": {
+      "upstream_sha256": "2afc479c6efdc16a7d279dd9bf05fe4a6114219113f7af15c990188170b569ae"
+    },
+    "firmware_eggs/egg_D5_public_mesh.c": {
+      "upstream_sha256": "0e8f7f816bd83d36f4afe3bf2c9c3358f473163ea75ec5ef51525780aea2ec64"
+    },
+    "firmware_eggs/egg_D5_public_mesh.h": {
+      "upstream_sha256": "d5b1b2e201b3543287912fd793747ceacbf787005017c15b0c4566baa944dc2d"
+    },
+    "firmware_eggs/egg_DF_graphics_test.c": {
+      "upstream_sha256": "cfc4c962c124a421e0886ca916079cbdd20c0fa8b542dc3fc59e80d9ab49f9b2"
+    },
+    "firmware_eggs/egg_DF_graphics_test.h": {
+      "upstream_sha256": "65a447e61a46f831fec8e0ea582b8a19b144a062fc69f69bc4a3f8bb009072e7"
+    },
+    "firmware_eggs/firmware_page.c": {
+      "upstream_sha256": "291fed4ade95ac34d285d8f840067c3e94103547ad02beebdec084748aff3302"
+    },
+    "firmware_eggs/firmware_page.h": {
+      "upstream_sha256": "a1fd5302720956da350cbcccc7d7b93a6145051bcbca990b42d57e51da3ccce1"
+    },
+    "firmware_eggs/firmware_page_font.h": {
+      "upstream_sha256": "17a19ba1e295cd550ec703783e862ad7eeb3c3ad5f4a15f13107d0a4ad9a57a6"
+    },
+    "firmware_eggs/firmware_page_qr.h": {
+      "upstream_sha256": "ae17c599804b78461bc3433cbcdf0bfd5c85d1d8135397c21102fd68604e19c6"
+    },
+    "firmware_eggs/logo_2dfx_asset.h": {
+      "upstream_sha256": "b64ebab5b4207a7d4f990ebc8cf927a5dcd87ca5d8af2c323d45958e728308b4"
+    },
+    "firmware_eggs/mesh3d_angles.h": {
+      "upstream_sha256": "ddac704985b6e5eaa8f98a4b21c957905c5470c41dcd66bfd87ec1509e1d3c71"
+    },
+    "firmware_eggs/portable/pico/rand.h": {
+      "upstream_sha256": "2e99de6fedbabca38e861ee424b6517d2de4723f4f4389407b9a95261641d35e"
+    },
+    "firmware_eggs/portable/pico/stdlib.h": {
+      "upstream_sha256": "5dfd5764d7aa32b99416215df0b233920b29319be8e586648adca6af02f02d01"
+    },
+    "firmware_eggs/portable/pico/time.h": {
+      "upstream_sha256": "c0b12d9039161b7f843e694c4ce4c90e1f96bbe0ab6ae124c6db66edaeeabc87"
+    },
+    "firmware_eggs/twodfx_api.h": {
+      "upstream_sha256": "8b6f33fb706532e8de68c2ae5d5c9280de561ef2a38b05cf8238c13375088a3a"
+    },
+    "firmware_eggs/twodfx_egg.h": {
+      "upstream_sha256": "ab170b60059ff46ab7e0d25f2770fa84df8a30b6a8f7078d07d05e039547c1f6"
+    },
+    "include/twodfx_emu.h": {
+      "upstream_sha256": "e3b64c0f0a4ecf0001f9a36bc536739544e77b3d91796d399187374ba343726c"
+    }
+  },
+  "upstream": "libretro/ep128emu-core"
+}

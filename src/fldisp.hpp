@@ -62,9 +62,14 @@ namespace Ep128Emu {
       // line number
       int       lineNum;
      private:
-      // a line of 768 pixels needs a maximum space of 768 * (9 / 16) = 432
-      // ( = 108 * 4) bytes in compressed format
+#ifdef ENABLE_A02_2DFX
+      // 48 x (mode 10h + 16 independent pixels) = 816 bytes maximum.
+      // Keep 16 bytes of copy/word-rounding headroom inside the message.
+      uint32_t  buf_[208];
+#else
+      // The untouched stock path needs 768 * 9/16 = 432 bytes.
       uint32_t  buf_[108];
+#endif
      public:
       Message_LineData()
         : Message(MsgType_LineData)

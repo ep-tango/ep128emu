@@ -32,6 +32,9 @@
 #include "vm.hpp"
 #include "ep_fdd.hpp"
 #include "wd177x.hpp"
+#ifdef ENABLE_A02_2DFX
+#  include "a02_2dfx_device.hpp"
+#endif
 #ifdef ENABLE_SDEXT
 #  include "sdext.hpp"
 #endif
@@ -188,6 +191,11 @@ namespace TVC64 {
 #ifdef ENABLE_SDEXT
     Ep128::SDExt  sdext;
 #endif
+#ifdef ENABLE_A02_2DFX
+    Ep128Emu::A02TwoDFX a02Device;
+    bool a02IRQLineHigh;
+    void a02UpdateIRQ();
+#endif
     // ----------------
     EP128EMU_INLINE void updateCPUCycles(int cycles);
     EP128EMU_INLINE void updateCPUHalfCycles(int halfCycles);
@@ -200,6 +208,11 @@ namespace TVC64 {
     static void ioPortWriteCallback(void *userData,
                                     uint16_t addr, uint8_t value);
     static uint8_t ioPortDebugReadCallback(void *userData, uint16_t addr);
+#ifdef ENABLE_A02_2DFX
+    static uint8_t a02PortReadCallback(void *, uint16_t);
+    static uint8_t a02PortDebugReadCallback(void *, uint16_t);
+    static void a02PortWriteCallback(void *, uint16_t, uint8_t);
+#endif
     static EP128EMU_REGPARM2 void hSyncStateChangeCallback(void *userData,
                                                            bool newState);
     static EP128EMU_REGPARM2 void vSyncStateChangeCallback(void *userData,
@@ -221,6 +234,16 @@ namespace TVC64 {
    public:
     TVC64VM(Ep128Emu::VideoDisplay&, Ep128Emu::AudioOutput&);
     virtual ~TVC64VM();
+#ifdef ENABLE_A02_2DFX
+    // Experimental read-only frame-clock diagnostic; no guest state/ABI
+    // change in the default-off five-platform build.
+    uint64_t getA02VideoFrameCount() const { return a02Device.videoFrames(); }
+    bool getA02Enabled() const { return a02Device.enabled(); }
+    bool getA02GuestBusTouched() const { return a02Device.guestBusTouched(); }
+    bool getA02EngineActive() const { return a02Device.engineActive(); }
+    uint8_t getA02StatusSnapshot() const { return a02Device.statusSnapshot(); }
+    void setA02Enabled(bool enabled);
+#endif
     /*!
      * Run emulation for the specified number of microseconds.
      */

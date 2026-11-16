@@ -1569,6 +1569,19 @@ int main(int argc, char **argv)
   Ep128Emu::stripString(installDirectory);
   if (installDirectory.length() == 0)
     return -1;
+#if defined(__linux__)
+  // The user's chosen installation directory must also own GUI/machine base
+  // configs. Previously those files were silently written to ~/.ep128emu.
+  // This process-local setting does not migrate or modify any old profile.
+  if (installDirectory[0] != '/') {
+    std::fprintf(stderr, "epmakecfg: select an absolute installation directory\n");
+    return -1;
+  }
+  if (setenv("EP128EMU_HOME", installDirectory.c_str(), 1) != 0) {
+    std::fprintf(stderr, "epmakecfg: failed to select profile directory\n");
+    return -1;
+  }
+#endif
   Ep128EmuConfigInstallerGUI  *gui = new Ep128EmuConfigInstallerGUI();
   Ep128Emu::setWindowIcon(gui->mainWindow, 11);
   Ep128Emu::setWindowIcon(gui->errorWindow, 12);

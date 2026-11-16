@@ -37,6 +37,11 @@ namespace Ep128 {
 
   void Ep128VM::saveState(Ep128Emu::File& f)
   {
+#ifdef ENABLE_A02_2DFX
+    // A02 bus/clock trial cannot serialize device RRAM or guest demo writes.
+    if (a02Device.touched())
+      throw Ep128Emu::Exception("2DFX active: snapshot/rewind unavailable in A02 trial");
+#endif
     ioPorts.saveState(f);
     memory.saveState(f);
     nick.saveState(f);
@@ -117,6 +122,11 @@ namespace Ep128 {
 
   void Ep128VM::recordDemo(Ep128Emu::File& f)
   {
+#ifdef ENABLE_A02_2DFX
+    // A02 bus/clock trial cannot serialize device RRAM or guest demo writes.
+    if (a02Device.touched())
+      throw Ep128Emu::Exception("2DFX active: demo unavailable in A02 trial");
+#endif
     // turn off tape motor, stop any previous demo recording or playback,
     // and reset keyboard state
     remoteControlState = 0x00;
@@ -245,6 +255,11 @@ namespace Ep128 {
 
   bool Ep128VM::getIsRewindRestoreSupported() const
   {
+#ifdef ENABLE_A02_2DFX
+    // 2DFX RRAM is external to the current bounded VM rewind snapshot.
+    if (a02Device.touched())
+      return false;
+#endif
     // Only regular Enterprise IMG files with quiescent WD177x and a
     // completed-frame host-video checkpoint are eligible. Never replay
     // a disk operation to reconstruct the video while browsing history.
@@ -544,6 +559,11 @@ namespace Ep128 {
 
   void Ep128VM::loadState(Ep128Emu::File::Buffer& buf)
   {
+#ifdef ENABLE_A02_2DFX
+    // A02 bus/clock trial cannot serialize device RRAM or guest demo writes.
+    if (a02Device.touched())
+      throw Ep128Emu::Exception("2DFX active: snapshot/rewind unavailable in A02 trial");
+#endif
     buf.setPosition(0);
     // check version number
     unsigned int  version = buf.readUInt32();
@@ -756,6 +776,11 @@ namespace Ep128 {
 
   void Ep128VM::loadDemo(Ep128Emu::File::Buffer& buf)
   {
+#ifdef ENABLE_A02_2DFX
+    // A02 bus/clock trial cannot serialize device RRAM or guest demo writes.
+    if (a02Device.touched())
+      throw Ep128Emu::Exception("2DFX active: demo unavailable in A02 trial");
+#endif
     buf.setPosition(0);
     // check version number
     unsigned int  version = buf.readUInt32();

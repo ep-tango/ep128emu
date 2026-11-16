@@ -99,7 +99,10 @@ namespace Ep128Emu {
      *         (c0a, c1a, bitmap_a, c0b, c1b, bitmap_b) and the pixel width
      *         is 1
      *   0x08: eight 8-bit color indices (pixel width = 2)
-     * The buffer contains 'nBytes' (in the range of 96 to 432) bytes of data.
+     *   0x10: sixteen independent 8-bit color indices (2DFX trial only).
+     * The stock buffer uses 96..432 bytes; with experimental 2DFX
+     * source-only video it may use up to 48 * 17 = 816 bytes.
+     * RLE8/YV12 capture buffers already reserve at least 816/1024 bytes.
      */
     virtual void horizontalSync(const uint8_t *buf, size_t nBytes) = 0;
     /*!

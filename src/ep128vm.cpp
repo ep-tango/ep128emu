@@ -675,20 +675,35 @@ namespace Ep128 {
 
   void Ep128VM::Nick_::irqStateChange(bool newState)
   {
+    // NICK exclusively owns DAVE INT1, including 2DFX-enabled builds.
     vm.dave.setInt1State(int(newState));
   }
 
   void Ep128VM::Nick_::drawLine(const uint8_t *buf, size_t nBytes)
   {
+#ifdef ENABLE_A02_2DFX
+    // Compose before advancing HSYNC so the current raw line is stable.
+    buf = vm.a02Device.composeLine(buf, &nBytes,
+                                    vm.nick.getA02CurrentPalette());
+#endif
     if (vm.getIsDisplayEnabled())
       vm.display.drawLine(buf, nBytes);
     if (vm.videoCapture)
       vm.videoCapture->horizontalSync(buf, nBytes);
+#ifdef ENABLE_A02_2DFX
+    vm.a02Device.hsync();
+    vm.a02UpdateIRQ();
+#endif
   }
 
   void Ep128VM::Nick_::vsyncStateChange(bool newState,
                                         unsigned int currentSlot_)
   {
+#ifdef ENABLE_A02_2DFX
+    if (newState)
+      vm.a02Device.hardwareVsync();
+    vm.a02UpdateIRQ();
+#endif
     if (vm.getIsDisplayEnabled())
       vm.display.vsyncStateChange(newState, currentSlot_);
     if (vm.videoCapture)
@@ -1138,6 +1153,61 @@ namespace Ep128 {
     }
     vm.midiBufferMutex.unlock();
     return value;
+  }
+#endif
+
+#ifdef ENABLE_A02_2DFX
+  void Ep128VM::setA02Enabled(bool enabled)
+  {
+    if (a02Device.enabled() == enabled)
+      return;
+    // GUI takes the VMThread lock before entering this method. Never leave
+    // host RRAM, pending raster IRQ or an old rewind epoch after switch.
+    a02Device.setEnabled(enabled);
+    ++rewindHostIOEpoch;
+    ioPorts.setReadCallback(0xF8, 0xF9,
+                            enabled ? &a02PortReadCallback : 0, this, 0x00);
+    ioPorts.setDebugReadCallback(0xF8, 0xF9,
+                                 enabled ? &a02PortDebugReadCallback : 0,
+                                 this, 0x00);
+    ioPorts.setWriteCallback(0xF8, 0xF9,
+                             enabled ? &a02PortWriteCallback : 0, this, 0x00);
+    // Deassert the external active-low pin, never disturb NICK's INT1.
+    a02UpdateIRQ();
+  }
+
+  void Ep128VM::a02UpdateIRQ()
+  {
+    // DAVE external INT2 is active-low and negative-edge latched.
+    // Never combine active-high 2DFX pending with NICK's INT1 edge.
+    dave.setInt2State(int(!a02Device.irq()));
+  }
+
+  uint8_t Ep128VM::a02PortReadCallback(void *userData, uint16_t addr)
+  {
+    Ep128VM& vm = *reinterpret_cast<Ep128VM *>(userData);
+    if (vm.isPlayingDemo || vm.isRecordingDemo)
+      return 0xFF;
+    uint8_t value = vm.a02Device.read(addr);
+    vm.a02UpdateIRQ();
+    return value;
+  }
+
+  uint8_t Ep128VM::a02PortDebugReadCallback(void *userData, uint16_t addr)
+  {
+    Ep128VM& vm = *reinterpret_cast<Ep128VM *>(userData);
+    return vm.a02Device.debugRead(addr);
+  }
+
+  void Ep128VM::a02PortWriteCallback(void *userData, uint16_t addr,
+                                     uint8_t value)
+  {
+    Ep128VM& vm = *reinterpret_cast<Ep128VM *>(userData);
+    if (vm.isPlayingDemo || vm.isRecordingDemo)
+      return;
+    vm.a02Device.write(addr, value);
+    ++vm.rewindHostIOEpoch;  // 8 MiB 2DFX state is not rewind-serializable.
+    vm.a02UpdateIRQ();
   }
 #endif
 
@@ -1761,6 +1831,9 @@ namespace Ep128 {
       mouseDeltaY(0),
       mouseButtonState(0x00),
       mouseWheelDelta(0x00)
+#ifdef ENABLE_A02_2DFX
+      , a02Device(TWODFX_EMU_ENTERPRISE)
+#endif
 #ifdef ENABLE_RESID
       , sid((SID *) 0),
       sidEnabled(false),
@@ -1844,6 +1917,12 @@ namespace Ep128 {
     ioPorts.setDebugReadCallback(0xF6, 0xF7,
                                  &midiPortDebugReadCallback, this, 0xF6);
     ioPorts.setWriteCallback(0xF6, 0xF7, &midiPortWriteCallback, this, 0xF6);
+#endif
+#ifdef ENABLE_A02_2DFX
+    ioPorts.setReadCallback(0xF8, 0xF9, &a02PortReadCallback, this, 0x00);
+    ioPorts.setDebugReadCallback(0xF8, 0xF9,
+                                 &a02PortDebugReadCallback, this, 0x00);
+    ioPorts.setWriteCallback(0xF8, 0xF9, &a02PortWriteCallback, this, 0x00);
 #endif
     ioPorts.setReadCallback(0x7E, 0x7F, &cmosMemoryIOReadCallback, this, 0x7E);
     ioPorts.setDebugReadCallback(0x7E, 0x7F,
@@ -1956,6 +2035,9 @@ namespace Ep128 {
     }
     z80.reset();
     ioPorts.reset();
+#ifdef ENABLE_A02_2DFX
+    a02Device.reset();
+#endif
     for (uint16_t i = 0x00A0; i <= 0x00BF; i++)
       ioPorts.writeDebug(i, 0x00);
     dave.reset(isColdReset);

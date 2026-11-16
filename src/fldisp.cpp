@@ -171,6 +171,17 @@ namespace Ep128Emu {
             break;
         } while (bufp[0] == 0x08);
         break;
+#ifdef ENABLE_A02_2DFX
+      case 0x10:                        // 16 independent 8-bit pixels
+        do {
+          std::memcpy(outBuf, bufp + 1, 16);
+          outBuf += 16;
+          bufp += 17;
+          if (outBuf >= endp)
+            break;
+        } while (bufp[0] == 0x10);
+        break;
+#endif
       default:                          // invalid flag byte
         do {
           *(outBuf++) = 0x00;
@@ -191,6 +202,10 @@ namespace Ep128Emu {
   void FLTKDisplay_::Message_LineData::copyLine(const uint8_t *buf,
                                                 size_t nBytes)
   {
+#ifdef ENABLE_A02_2DFX
+    if (nBytes > 816U)
+      throw Exception("2DFX line packet exceeds 816-byte owner capacity");
+#endif
     nBytes_ = (unsigned int) nBytes;
     if (nBytes_ & 3U)
       buf_[nBytes_ / 4U] = 0U;
@@ -242,7 +257,11 @@ namespace Ep128Emu {
       size_t lineNum = size_t(in[p]) | (size_t(in[p + 1]) << 8);
       size_t len = size_t(in[p + 2]) | (size_t(in[p + 3]) << 8);
       p += 4;
+#ifdef ENABLE_A02_2DFX
+      if (lineNum >= 578 || len < 1 || len > 816 || len > (in.size() - p))
+#else
       if (lineNum >= 578 || len < 1 || len > 432 || len > (in.size() - p))
+#endif
         return false;
       rewindProducerLines[lineNum].assign(in.begin() + p, in.begin() + p + len);
       p += len;
@@ -260,7 +279,11 @@ namespace Ep128Emu {
       size_t lineNum = size_t(in[p]) | (size_t(in[p + 1]) << 8);
       size_t len = size_t(in[p + 2]) | (size_t(in[p + 3]) << 8);
       p += 4;
+#ifdef ENABLE_A02_2DFX
+      if (lineNum >= 578 || len < 1 || len > 816 || len > (in.size() - p))
+#else
       if (lineNum >= 578 || len < 1 || len > 432 || len > (in.size() - p))
+#endif
         return false;
       p += len;
     }

@@ -36,12 +36,18 @@
 #endif
 #ifdef WIN32
 # include <shellapi.h>
+# include "win_taskbar_identity.hpp"
 # include "win_trial_paths.hpp"
 # include "rom_archive_catalog.hpp"
 #endif
 #include <FL/fl_ask.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Box.H>
+#ifdef ENABLE_A02_2DFX
+# include <FL/Fl_Pixmap.H>
+# include <FL/Fl_Double_Window.H>
+# include "a02_logo_xpm.hpp"
+#endif
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Window.H>
 #include "guicolor.hpp"
@@ -995,6 +1001,22 @@ void Ep128EmuGUI::init_()
   oldSpeedPercentage = 100;
   oldPauseFlag = true;
   runtimeHUDEnabled = true;
+#ifdef ENABLE_A02_2DFX
+  // Preserve established A02 guest/demo behavior: extension installed in
+  // opt-in test builds until a user explicitly disables it.
+  a02Enabled = true;
+#else
+  a02Enabled = false;
+#endif
+  a02LogoStatus = (Fl_Box *) 0;
+  a02PowerLED = (Fl_Box *) 0;
+  a02EngineActive = false;
+  a02DebugWindow = (Fl_Window *) 0;
+  a02DebugStatusText = (Fl_Box *) 0;
+  for (int i = 0; i < 8; i++) a02DebugLEDs[i] = (Fl_Box *) 0;
+  a02DebugLastStatus = -1;
+  a02DebugLastEnabled = false;
+  a02DebugLastEngine = false;
   showInformationalDialogs = false;
   betaDOSAutoEnterOnReset = false;
   betaDOSAutoEnterPolls = 0;
@@ -1206,10 +1228,22 @@ void Ep128EmuGUI::updateDisplay_windowMode()
   int     newWindowWidth = mainWindow->w();
   int     newWindowHeight = mainWindow->h();
   if ((displayMode & 1) == 0) {
-    statusDisplayGroup->resize(newWindowWidth - 360,
-                               (newWindowWidth >= 745 ?
+    int statusWidth = 360;
+    int topRowMinWidth = 745;
+#ifdef ENABLE_A02_2DFX
+    // Borrow only the unused menu-to-disk horizontal space. The entire
+    // disk/REM/logo block moves left as one: disk-to-REM gap is unchanged.
+    // Keep at least 385 px for the native menu; top-row threshold stays 745.
+    if (a02Enabled &&
+        (typeid(vm) == typeid(Ep128::Ep128VM) ||
+         typeid(vm) == typeid(TVC64::TVC64VM)) &&
+        newWindowWidth >= topRowMinWidth)
+      statusWidth = (newWindowWidth < 791 ? newWindowWidth - 385 : 406);
+#endif
+    statusDisplayGroup->resize(newWindowWidth - statusWidth,
+                               (newWindowWidth >= topRowMinWidth ?
                                 0 : (newWindowHeight - 30)),
-                               360, 30);
+                               statusWidth, 30);
     statusDisplayGroup->show();
     mainMenuBar->resize(0, 2, 380, getMenuBarHeight());
     mainMenuBar->show();
@@ -1243,16 +1277,27 @@ void Ep128EmuGUI::updateDisplay_windowSize()
   int     newWindowHeight = mainWindow->h();
   if (newWindowWidth != oldWindowWidth || newWindowHeight != oldWindowHeight) {
     if ((displayMode & 1) == 0) {
-      int   h = newWindowHeight - (newWindowWidth >= 745 ? 30 : 60);
+      int statusWidth = 360;
+      int topRowMinWidth = 745;
+#ifdef ENABLE_A02_2DFX
+      // Match updateDisplay_windowMode(), including the 385px menu reserve.
+      if (a02Enabled &&
+          (typeid(vm) == typeid(Ep128::Ep128VM) ||
+           typeid(vm) == typeid(TVC64::TVC64VM)) &&
+          newWindowWidth >= topRowMinWidth)
+        statusWidth = (newWindowWidth < 791 ? newWindowWidth - 385 : 406);
+#endif
+      int h = newWindowHeight - (newWindowWidth >= topRowMinWidth ?
+                                 30 : 60);
       emulatorWindow->resize(0, 30, newWindowWidth, h);
       if ((displayMode & 2) == 0) {
         config.display.width = newWindowWidth;
         config.display.height = h;
       }
-      statusDisplayGroup->resize(newWindowWidth - 360,
-                                 (newWindowWidth >= 745 ?
+      statusDisplayGroup->resize(newWindowWidth - statusWidth,
+                                 (newWindowWidth >= topRowMinWidth ?
                                   0 : (newWindowHeight - 30)),
-                                 360, 30);
+                                 statusWidth, 30);
       mainMenuBar->resize(0, 2, 380, getMenuBarHeight());
       diskStatusDisplayGroup->resize(statusDisplayGroup->x() + 2,
                                      statusDisplayGroup->y(), 30, 30);
@@ -1515,11 +1560,111 @@ void Ep128EmuGUI::updateRuntimeStatusDisplay(
 #endif
 }
 
+#ifdef ENABLE_A02_2DFX
+void Ep128EmuGUI::updateA02DebugPanel()
+{
+  if (!a02DebugWindow || !a02DebugWindow->shown())
+    return;
+  const bool attached = a02Enabled &&
+      (typeid(vm) == typeid(Ep128::Ep128VM) ||
+       typeid(vm) == typeid(TVC64::TVC64VM));
+  uint8_t status = 0xFF;
+  bool engine = false;
+  if (attached && typeid(vm) == typeid(Ep128::Ep128VM)) {
+    const Ep128::Ep128VM& ep = static_cast<const Ep128::Ep128VM&>(vm);
+    status = ep.getA02StatusSnapshot();
+    engine = ep.getA02EngineActive();
+  }
+  else if (attached && typeid(vm) == typeid(TVC64::TVC64VM)) {
+    const TVC64::TVC64VM& tvc = static_cast<const TVC64::TVC64VM&>(vm);
+    status = tvc.getA02StatusSnapshot();
+    engine = tvc.getA02EngineActive();
+  }
+  if (a02DebugLastStatus == int(status) &&
+      a02DebugLastEnabled == attached && a02DebugLastEngine == engine)
+    return;
+  a02DebugLastStatus = int(status);
+  a02DebugLastEnabled = attached;
+  a02DebugLastEngine = engine;
+
+  char caption[128];
+  if (attached)
+    std::snprintf(caption, sizeof(caption),
+                  "IN F8h (248): %02X    Engine: %s", unsigned(status),
+                  (engine ? "ON" : "OFF"));
+  else
+    std::snprintf(caption, sizeof(caption),
+                  "IN F8h (248): --    2DFX detached");
+  a02DebugStatusText->copy_label(caption);
+  for (int i = 0; i < 8; i++) {
+    const int bit = 7 - i;
+    const bool asserted = attached && ((status & (1u << bit)) == 0);
+    Fl_Box *led = a02DebugLEDs[i];
+    if (!led) continue;
+    led->color(asserted ? fl_rgb_color(38, 159, 95)
+                        : fl_rgb_color(88, 90, 92));
+    led->redraw();
+  }
+}
+#endif
+
 void Ep128EmuGUI::updateRecordingStatusDisplay()
 {
   // Reserve left-hand space for disk, REM1/REM2 and demo P/R indicators.
-  const int x0 = statusDisplayGroup->x() + 151;
-  const int y0 = statusDisplayGroup->y() + 5;
+  const int sx = statusDisplayGroup->x();
+  const int sy = statusDisplayGroup->y();
+  const int y0 = sy + 5;
+  int x0 = sx + 151;
+#ifdef ENABLE_A02_2DFX
+  // Keep both 102px recording timers right-aligned when the status group
+  // widens; x151..358 at 360px, x197..404 at 406px.
+  if (a02Enabled && a02LogoStatus)
+    x0 = sx + statusDisplayGroup->w() - 209;
+#endif
+
+#ifdef ENABLE_A02_2DFX
+  if (a02LogoStatus && a02PowerLED) {
+    a02LogoStatus->hide();
+    a02PowerLED->hide();
+    // REM labels and 11px LEDs always retain their original dimensions.
+    remCaptionDisplay->label("REM:");
+    remCaptionDisplay->resize(sx + 38, sy + 5, 30, 20);
+    rem1StatusDisplay->resize(sx + 70, sy + 10, 11, 11);
+    rem1NumberDisplay->resize(sx + 82, sy + 5, 11, 20);
+    rem2StatusDisplay->resize(sx + 96, sy + 10, 11, 11);
+    rem2NumberDisplay->resize(sx + 108, sy + 5, 11, 20);
+    demoStatusDisplay2->resize(sx + 131, sy + 5, 14, 20);
+
+    if (a02Enabled) {
+      // Disk/REM/logo/LED offsets are untouched: their spacing is invariant.
+      // Added width is assigned to tape info without changing bar height.
+      a02LogoStatus->resize(sx + 148, sy + 5, 52, 20);
+      a02PowerLED->resize(sx + 203, sy + 10, 11, 11);
+      a02PowerLED->color(a02EngineActive ?
+          fl_rgb_color(38, 159, 95) : fl_rgb_color(88, 90, 92));
+      // Recording timers take precedence over logo/LED, as before.
+      if (!oldVideoRecordingFlag && !oldAudioRecordingFlag) {
+        a02LogoStatus->show();
+        a02PowerLED->show();
+      }
+      const int counterStart = statusDisplayGroup->w() - 83;
+      // LED ends at x214; tape text starts x220: deliberate 6px gap.
+      // At 406px width the label grows from 60px to 102px, without
+      // moving the recording counter or shrinking the REM indicators.
+      tapeInfoDisplay->resize(sx + 220, y0, counterStart - 221, 20);
+      tapeInfoDisplay->align(Fl_Align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE |
+                                    FL_ALIGN_CLIP));
+      tapePositionDisplay->resize(sx + counterStart, y0, 81, 20);
+      tapeStatusDisplay->resize(sx + counterStart, y0, 20, 20);
+    }
+    else {
+      tapeInfoDisplay->align(Fl_Align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE));
+      tapeInfoDisplay->resize(sx + 151, y0, 106, 20);
+      tapePositionDisplay->resize(sx + 258, y0, 100, 20);
+      tapeStatusDisplay->resize(sx + 258, y0, 20, 20);
+    }
+  }
+#endif
 
   videoRecordStatusDisplay->hide();
   audioRecordStatusDisplay->hide();
@@ -1641,6 +1786,24 @@ void Ep128EmuGUI::updateDisplay(double t)
   }
   updatePixelPerfectMenuLabel();
   syncRecordingStatusState();
+#ifdef ENABLE_A02_2DFX
+  if (!exitFlag && a02Enabled && a02PowerLED) {
+    bool active = false;
+    if (typeid(vm) == typeid(Ep128::Ep128VM))
+      active = static_cast<const Ep128::Ep128VM&>(vm).getA02EngineActive();
+    else if (typeid(vm) == typeid(TVC64::TVC64VM))
+      active = static_cast<const TVC64::TVC64VM&>(vm).getA02EngineActive();
+    if (active != a02EngineActive) {
+      a02EngineActive = active;
+      a02PowerLED->color(active ? fl_rgb_color(38, 159, 95)
+                                : fl_rgb_color(88, 90, 92));
+      a02PowerLED->redraw();
+    }
+  }
+#endif
+#ifdef ENABLE_A02_2DFX
+  updateA02DebugPanel();
+#endif
   if (vmThreadStatus.isPaused != oldPauseFlag) {
     oldPauseFlag = vmThreadStatus.isPaused;
     updateDisplay_windowTitle();
@@ -2435,6 +2598,19 @@ void Ep128EmuGUI::createMenus()
     if (n >= 0)
       const_cast<Fl_Menu_Item *>(mainMenuBar->menu() + n)->deactivate();
   }
+#ifdef ENABLE_A02_2DFX
+  // 2DFX belongs immediately above Machine/Configure, not under Options.
+  if (iconNum == 0 || iconNum == 3) {
+    mainMenuBar->add("Machine/2DFX/Enabled", FL_ALT | 'x',
+                     &menuCallback_Machine_TwoDFX, (void *) this,
+                     FL_MENU_TOGGLE);
+    mainMenuBar->add("Machine/2DFX/Status LEDs...", 0,
+                     &menuCallback_Machine_TwoDFXDebug, (void *) this);
+    const int idx = mainMenuBar->find_index("Machine/2DFX/Enabled");
+    if (idx >= 0 && a02Enabled)
+      const_cast<Fl_Menu_Item *>(mainMenuBar->menu() + idx)->set();
+  }
+#endif
   mainMenuBar->add("Machine/Configure... (Shift+F10)",
                    (char *) 0, &menuCallback_Machine_Configure, (void *) this);
   mainMenuBar->add("Options/Display/Set size to 384x288",
@@ -2723,14 +2899,38 @@ void Ep128EmuGUI::run()
   // Native window-close must take the same SDD durability path as File/Quit.
   // Without a callback FLTK hides mainWindow immediately, bypassing it.
   mainWindow->callback(&menuCallback_File_Quit, (void *) this);
+#ifdef ENABLE_A02_2DFX
+  if ((typeid(vm) == typeid(Ep128::Ep128VM) ||
+       typeid(vm) == typeid(TVC64::TVC64VM)) && !a02LogoStatus) {
+    static Fl_Pixmap logoPixmap(ep128emuA02LogoXPM);
+    statusDisplayGroup->begin();
+    a02LogoStatus = new Fl_Box(statusDisplayGroup->x() + 148,
+                               statusDisplayGroup->y() + 5, 52, 20);
+    a02LogoStatus->image(&logoPixmap);
+    a02LogoStatus->tooltip("2DFX expansion (Machine/2DFX/Enabled)");
+    a02PowerLED = new Fl_Box(0, 0, 11, 11);
+    a02PowerLED->box(FL_OVAL_BOX);
+    a02PowerLED->tooltip(
+        "2DFX engine: green after OUT F8h,50h / F9h,01h or FFh;"
+        " off after F9h,00h or machine RESET");
+    statusDisplayGroup->end();
+    updateRecordingStatusDisplay();
+  }
+#endif
+#ifdef WIN32
+  const int windowsMachineIcon =
+      (typeid(vm) == typeid(Ep128::Ep128VM) ? 0 :
+       (typeid(vm) == typeid(ZX128::ZX128VM) ? 1 :
+        (typeid(vm) == typeid(CPC464::CPC464VM) ? 2 : 3)));
+  // Must precede showing the first window: FLTK settings windows have no
+  // per-window AppUserModelID, and otherwise split into a second taskbar
+  // group when the main HWND receives its machine-specific identity.
+  (void) Ep128EmuWinTaskbar::setProcessMachineIdentity(windowsMachineIcon);
+#endif
   mainWindow->show();
 #ifdef WIN32
-  // Window/shortcut icons already have EP/ZX/CPC/TVC resources. Explicitly
-  // refresh the realized top-level HWND so taskbar and Alt-Tab follow VM mode.
-  Ep128Emu::setWindowsTaskbarMachineIcon(
-      mainWindow, typeid(vm) == typeid(Ep128::Ep128VM) ? 0 :
-      (typeid(vm) == typeid(ZX128::ZX128VM) ? 1 :
-       (typeid(vm) == typeid(CPC464::CPC464VM) ? 2 : 3)));
+  // Keep the accepted EP/ZX/CPC/TVC pinned-taskbar and Alt-Tab icon behavior.
+  Ep128Emu::setWindowsTaskbarMachineIcon(mainWindow, windowsMachineIcon);
 #endif
 #ifdef __APPLE__
   // The machine-specific FLTK window icons are already configured above.
@@ -3157,6 +3357,23 @@ int Ep128EmuGUI::handleFLTKEvent(void *userData, int event)
       if (gui_.handleApplicationShortcut(keyCode, isKeyPress))
         return 1;
 
+#ifdef ENABLE_A02_2DFX
+      // Option+X toggles only the installed EP/TVC expansion. Consume
+      // both press and release to avoid leaking X into the guest VM.
+      if ((keyCode == 'x' || keyCode == 'X') && Fl::event_alt() &&
+          !Fl::event_shift()) {
+        const Fl_Menu_Item *mi =
+            gui_.mainMenuBar->find_item("Machine/2DFX/Enabled");
+        if (mi) {
+          if (isKeyPress) {
+            Fl_Menu_Item *item = const_cast<Fl_Menu_Item *>(mi);
+            if (item->value()) item->clear(); else item->set();
+            gui_.menuCallback_Machine_TwoDFX((Fl_Widget *) 0, userData);
+          }
+          return 1;
+        }
+      }
+#endif
       // Configurable application shortcuts are dispatched above before any
       // event can reach the emulated keyboard. The remaining code handles
       // legacy fixed shortcuts that are not configurable yet.
@@ -3424,7 +3641,8 @@ int Ep128EmuGUI::handleFLTKEvent(void *userData, int event)
            key == 'a' || key == 'v' || key == 'b' || key == 'c' ||
            key == 'd' || key == 'f' || key == 'i' || key == 'k' ||
            key == 'l' || key == 'o' || key == 'p' || key == 'q' ||
-           key == 'r' || key == 's' || key == 't' || key == 'u');
+           key == 'r' || key == 's' || key == 't' || key == 'u' ||
+           key == 'x');
       if (legacyAlt) {
         // A native Windows menu may send FL_SHORTCUT but consume FL_KEYUP.
         // The old synthetic FL_KEYDOWN left functionKeyState latched so the
@@ -4884,6 +5102,9 @@ static const char *ep128emuFixedShortcutConflict(int key, int modifiers)
     { 's', FL_ALT, "Save snapshot (Option+S)" },
     { 't', FL_ALT, "Open tape (Option+T)" },
     { 'u', FL_ALT, "Sound settings (Option+U)" }
+#ifdef ENABLE_A02_2DFX
+    ,{ 'x', FL_ALT, "2DFX toggle (Option+X)" }
+#endif
   };
   for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
     if (fixed[i].key == key && fixed[i].modifiers == modifiers) {
@@ -5343,6 +5564,15 @@ void Ep128EmuGUI::updateMenu()
   else
     getMenuItem(1).deactivate();
   updatePixelPerfectMenuLabel();
+#ifdef ENABLE_A02_2DFX
+  const Fl_Menu_Item *twoDFXItem =
+      mainMenuBar->find_item("Machine/2DFX/Enabled");
+  if (twoDFXItem) {
+    Fl_Menu_Item *m = const_cast<Fl_Menu_Item *>(twoDFXItem);
+    if (a02Enabled) m->set();
+    else m->clear();
+  }
+#endif
   const Fl_Menu_Item *printerItem =
       mainMenuBar->find_item("Machine/Printer/Capture printer output");
   if (printerItem) {
@@ -7999,6 +8229,101 @@ void Ep128EmuGUI::menuCallback_Options_RuntimeHUD(Fl_Widget *o, void *v)
   gui_.updateDisplay_windowTitle();
   gui_.mainWindow->redraw();
 }
+
+#ifdef ENABLE_A02_2DFX
+void Ep128EmuGUI::menuCallback_Machine_TwoDFXDebug(Fl_Widget *o, void *v)
+{
+  (void) o;
+  Ep128EmuGUI& gui_ = *reinterpret_cast<Ep128EmuGUI *>(v);
+  if (typeid(gui_.vm) != typeid(Ep128::Ep128VM) &&
+      typeid(gui_.vm) != typeid(TVC64::TVC64VM))
+    return;
+  if (!gui_.a02DebugWindow) {
+    // Standalone window: do not attach it to the emulator's status group.
+    Fl_Group *previousGroup = Fl_Group::current();
+    Fl_Group::current((Fl_Group *) 0);
+    Fl_Double_Window *panel =
+        new Fl_Double_Window(414, 296, "2DFX - Status LEDs");
+    gui_.a02DebugWindow = panel;
+    panel->color(fl_rgb_color(48, 48, 48));
+    panel->begin();
+    gui_.a02DebugStatusText = new Fl_Box(16, 10, 380, 26);
+    gui_.a02DebugStatusText->labelsize(14);
+    gui_.a02DebugStatusText->labelcolor(FL_WHITE);
+    gui_.a02DebugStatusText->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    static const char *const names[8] = {
+      "B7  COLLISION_DETECTED",
+      "B6  2DFX_PRESENT",
+      "B5  RENDER_OVERRUN (timing not modeled)",
+      "B4  RASTER_INT4",
+      "B3  RASTER_INT3",
+      "B2  RASTER_INT2",
+      "B1  RASTER_INT1",
+      "B0  RENDER_TIME (timing not modeled)"
+    };
+    for (int i = 0; i < 8; i++) {
+      const int y = 48 + i * 25;
+      Fl_Box *led = new Fl_Box(19, y + 3, 14, 14);
+      led->box(FL_OVAL_BOX);
+      led->color(fl_rgb_color(88, 90, 92));
+      gui_.a02DebugLEDs[i] = led;
+      Fl_Box *name = new Fl_Box(45, y, 355, 21, names[i]);
+      name->labelsize(12);
+      name->labelcolor(FL_WHITE);
+      name->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    }
+    Fl_Box *note = new Fl_Box(16, 253, 382, 32,
+        "0 = active (green). B5/B0 are not timed in the portable core.");
+    note->labelsize(11);
+    note->labelcolor(FL_WHITE);
+    note->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+    panel->end();
+    Fl_Group::current(previousGroup);
+  }
+  gui_.a02DebugLastStatus = -1;
+  gui_.positionAuxiliaryWindow(gui_.a02DebugWindow);
+  gui_.a02DebugWindow->show();
+  gui_.updateA02DebugPanel();
+}
+
+void Ep128EmuGUI::menuCallback_Machine_TwoDFX(Fl_Widget *o, void *v)
+{
+  (void) o;
+  Ep128EmuGUI& gui_ = *reinterpret_cast<Ep128EmuGUI *>(v);
+  const Fl_Menu_Item *m = gui_.mainMenuBar->find_item("Machine/2DFX/Enabled");
+  const bool requested = (m && m->value() != 0);
+  if (requested == gui_.a02Enabled)
+    return;
+  if (!gui_.lockVMThread()) {
+    gui_.updateMenu();  // revert the check mark if VM cannot be locked
+    return;
+  }
+  try {
+    if (typeid(gui_.vm) == typeid(Ep128::Ep128VM))
+      static_cast<Ep128::Ep128VM&>(gui_.vm).setA02Enabled(requested);
+    else if (typeid(gui_.vm) == typeid(TVC64::TVC64VM))
+      static_cast<TVC64::TVC64VM&>(gui_.vm).setA02Enabled(requested);
+    else
+      throw std::runtime_error("2DFX is supported on Enterprise and TVC only");
+  }
+  catch (const std::exception& e) {
+    gui_.unlockVMThread();
+    gui_.updateMenu();
+    gui_.errorMessage(e.what());
+    return;
+  }
+  gui_.unlockVMThread();
+  gui_.a02Enabled = requested;
+  gui_.a02EngineActive = false;  // physical green LED starts dark
+  gui_.a02DebugLastStatus = -1;
+  gui_.updateA02DebugPanel();
+  gui_.updateMenu();
+  // Port switch changes status group width and its top-row threshold.
+  gui_.oldWindowWidth = -1;
+  gui_.updateDisplay_windowSize();
+  gui_.mainWindow->redraw();
+}
+#endif
 
 void Ep128EmuGUI::menuCallback_Options_InformationDialogs(Fl_Widget *o, void *v)
 {

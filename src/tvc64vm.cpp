@@ -635,15 +635,28 @@ namespace TVC64 {
 
   void TVC64VM::TVCVideo_::drawLine(const uint8_t *buf, size_t nBytes)
   {
+#ifdef ENABLE_A02_2DFX
+    buf = vm.a02Device.composeLine(buf, &nBytes, (const uint8_t *) 0);
+#endif
     if (vm.getIsDisplayEnabled())
       vm.display.drawLine(buf, nBytes);
     if (vm.videoCapture)
       vm.videoCapture->horizontalSync(buf, nBytes);
+#ifdef ENABLE_A02_2DFX
+    vm.a02Device.hsync();
+    vm.a02UpdateIRQ();
+#endif
   }
 
   void TVC64VM::TVCVideo_::vsyncStateChange(bool newState,
                                             unsigned int currentSlot_)
   {
+#ifdef ENABLE_A02_2DFX
+    if (newState) {
+      vm.a02Device.hardwareVsync();
+      vm.a02UpdateIRQ();
+    }
+#endif
     if (vm.getIsDisplayEnabled())
       vm.display.vsyncStateChange(newState, currentSlot_);
     if (vm.videoCapture)
@@ -689,6 +702,65 @@ namespace TVC64 {
       demoBuffer.clear();
     }
   }
+
+#ifdef ENABLE_A02_2DFX
+  void TVC64VM::setA02Enabled(bool enabled)
+  {
+    if (a02Device.enabled() == enabled)
+      return;
+    // The TVC IRQ3 is exclusively owned by this A02 extension.
+    // Remove its latch without changing any other TVC IRQ source.
+    a02Device.setEnabled(enabled);
+    ++rewindHostIOEpoch;
+    ioPorts.setReadCallback(0xF8, 0xF9,
+                            enabled ? &a02PortReadCallback : 0, this, 0x00);
+    ioPorts.setDebugReadCallback(0xF8, 0xF9,
+                                 enabled ? &a02PortDebugReadCallback : 0,
+                                 this, 0x00);
+    ioPorts.setWriteCallback(0xF8, 0xF9,
+                             enabled ? &a02PortWriteCallback : 0, this, 0x00);
+    irqState &= uint8_t(~0x08u);
+    a02IRQLineHigh = false;
+    a02UpdateIRQ();
+  }
+
+  void TVC64VM::a02UpdateIRQ()
+  {
+    // Extension 3 is an edge-latched TVC IRQ, not a level retrigger.
+    // The controller may ACK at 5Bh while 2DFX pending remains high.
+    const bool irqHigh = a02Device.irq();
+    if (irqHigh && !a02IRQLineHigh && (irqEnableMask & 0x08))
+      irqState |= 0x08;
+    a02IRQLineHigh = irqHigh;
+  }
+
+  uint8_t TVC64VM::a02PortReadCallback(void *userData, uint16_t addr)
+  {
+    TVC64VM& vm = *reinterpret_cast<TVC64VM *>(userData);
+    if (vm.isPlayingDemo || vm.isRecordingDemo)
+      return 0xFF;
+    uint8_t value = vm.a02Device.read(addr);
+    vm.a02UpdateIRQ();
+    return value;
+  }
+
+  uint8_t TVC64VM::a02PortDebugReadCallback(void *userData, uint16_t addr)
+  {
+    TVC64VM& vm = *reinterpret_cast<TVC64VM *>(userData);
+    return vm.a02Device.debugRead(addr);
+  }
+
+  void TVC64VM::a02PortWriteCallback(void *userData, uint16_t addr,
+                                     uint8_t value)
+  {
+    TVC64VM& vm = *reinterpret_cast<TVC64VM *>(userData);
+    if (vm.isPlayingDemo || vm.isRecordingDemo)
+      return;
+    vm.a02Device.write(addr, value);
+    ++vm.rewindHostIOEpoch;  // No 8 MiB state in VM rewind snapshots yet.
+    vm.a02UpdateIRQ();
+  }
+#endif
 
   uint8_t TVC64VM::ioPortReadCallback(void *userData, uint16_t addr)
   {
@@ -1338,6 +1410,10 @@ namespace TVC64 {
       tapeSamplesPerCRTCCycle(0L),
       tapeSamplesRemaining(-1L),
       crtcFrequency(1562500)
+#ifdef ENABLE_A02_2DFX
+      , a02Device(TWODFX_EMU_TVC),
+      a02IRQLineHigh(false)
+#endif
   {
     for (size_t i = 0;
          i < (sizeof(callbacks) / sizeof(TVC64VMCallback));
@@ -1347,6 +1423,12 @@ namespace TVC64 {
       callbacks[i].nxt = (TVC64VMCallback *) 0;
     }
     // register I/O callbacks
+#ifdef ENABLE_A02_2DFX
+    ioPorts.setReadCallback(0xF8, 0xF9, &a02PortReadCallback, this, 0x00);
+    ioPorts.setDebugReadCallback(0xF8, 0xF9,
+                                 &a02PortDebugReadCallback, this, 0x00);
+    ioPorts.setWriteCallback(0xF8, 0xF9, &a02PortWriteCallback, this, 0x00);
+#endif
     ioPorts.setReadCallback(
         0x0000, 0x007F, &ioPortReadCallback, (void *) this, 0x0000);
     ioPorts.setDebugReadCallback(
@@ -1423,6 +1505,10 @@ namespace TVC64 {
   {
     stopDemoPlayback();         // TODO: should be recorded as an event ?
     stopDemoRecording(false);
+#ifdef ENABLE_A02_2DFX
+    a02Device.reset();
+    a02IRQLineHigh = false;
+#endif
     z80.reset();
     memory.setEnableSDExt();
     videoRenderer.setVideoMemory(memory.getVideoMemory());

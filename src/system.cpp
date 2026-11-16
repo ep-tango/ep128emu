@@ -403,6 +403,23 @@ namespace Ep128Emu {
     std::string dirName;
 
     dirName = "";
+#if defined(__linux__)
+    // An explicit per-process profile path is authoritative for *all*
+    // File(useHomeDirectory=true) reads and writes, including EP/ZX/CPC/TVC
+    // configs, GUI state and the makecfg installer. No implicit migration.
+    const char *profile = std::getenv("EP128EMU_HOME");
+    if (profile && profile[0]) {
+      if (profile[0] != '/')
+        throw Exception("EP128EMU_HOME must be an absolute directory path");
+      dirName = profile;
+      if (mkdir(dirName.c_str(), 0700) != 0 && errno != EEXIST)
+        throw Exception("cannot create EP128EMU_HOME profile directory");
+      struct stat info;
+      if (stat(dirName.c_str(), &info) != 0 || !S_ISDIR(info.st_mode))
+        throw Exception("EP128EMU_HOME is not a directory");
+      return dirName;
+    }
+#endif
 #ifndef WIN32
     if (std::getenv("HOME") != (char*) 0)
       dirName = std::getenv("HOME");

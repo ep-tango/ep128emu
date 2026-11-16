@@ -893,11 +893,14 @@ namespace Ep128Emu {
 
   void OpenGLDisplay::displayFrame()
   {
-#ifdef WIN32
-    // FLTK 1.4 Windows HiDPI: OpenGL viewport dimensions are framebuffer pixels.
+#if defined(WIN32) || defined(__linux__)
+    // GL viewport units are framebuffer pixels, including HiDPI/Wayland/X11.
+    // Using FLTK's logical w()/h() left part of a scaled X11 backing surface
+    // uncovered (desktop ghosting and bottom-left image on Arch Linux).
     int viewportW = this->pixel_w();
     int viewportH = this->pixel_h();
 #else
+    // Preserve the accepted Cocoa backing behavior independently.
     int viewportW = (displayParameters.pixelPerfect ? this->pixel_w() : this->w());
     int viewportH = (displayParameters.pixelPerfect ? this->pixel_h() : this->h());
 #endif
@@ -1204,7 +1207,8 @@ namespace Ep128Emu {
 
   void OpenGLDisplay::initializeGLDisplay()
   {
-#ifdef WIN32
+#if defined(WIN32) || defined(__linux__)
+    // OpenGL always addresses physical framebuffer pixels on Linux and Win32.
     glViewport(0, 0, GLsizei(this->pixel_w()), GLsizei(this->pixel_h()));
 #else
     glViewport(0, 0,

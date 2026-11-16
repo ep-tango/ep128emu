@@ -13,6 +13,25 @@
 
 namespace Ep128EmuWinTaskbar {
 
+// All windows in one emulator process must share the selected machine's
+// AppUserModelID. The main HWND also has a per-window ID for its icon;
+// without the process ID, FLTK's independent settings windows form a
+// second Explorer taskbar group.
+inline const wchar_t *machineAppUserModelID(int machineIcon)
+{
+  static const wchar_t * const ids[4] = {
+    L"EP128Emu.Machine.Enterprise", L"EP128Emu.Machine.Spectrum",
+    L"EP128Emu.Machine.CPC", L"EP128Emu.Machine.TVC"
+  };
+  return (machineIcon >= 0 && machineIcon < 4 ? ids[machineIcon] : 0);
+}
+
+inline bool setProcessMachineIdentity(int machineIcon)
+{
+  const wchar_t *id = machineAppUserModelID(machineIcon);
+  return id && SUCCEEDED(SetCurrentProcessExplicitAppUserModelID(id));
+}
+
 inline bool setMachineIdentity(HWND window, int machineIcon)
 {
   if (!window || !IsWindow(window) || machineIcon < 0 || machineIcon > 3)
@@ -33,10 +52,6 @@ inline bool setMachineIdentity(HWND window, int machineIcon)
     if (!count || size_t(count) >= exePath.size())
       result = E_FAIL;
     if (SUCCEEDED(result)) {
-      static const wchar_t *const ids[4] = {
-        L"EP128Emu.Machine.Enterprise", L"EP128Emu.Machine.Spectrum",
-        L"EP128Emu.Machine.CPC", L"EP128Emu.Machine.TVC"
-      };
       static const wchar_t *const args[4] = {
         L"", L" -zx", L" -cpc", L" -tvc"
       };
@@ -68,7 +83,7 @@ inline bool setMachineIdentity(HWND window, int machineIcon)
       if (SUCCEEDED(result)) {
         PROPVARIANT pv = {};
         pv.vt = VT_LPWSTR;
-        pv.pwszVal = const_cast<LPWSTR>(ids[machineIcon]);
+        pv.pwszVal = const_cast<LPWSTR>(machineAppUserModelID(machineIcon));
         result = store->SetValue(PKEY_AppUserModel_ID, pv);
       }
       if (SUCCEEDED(result))
