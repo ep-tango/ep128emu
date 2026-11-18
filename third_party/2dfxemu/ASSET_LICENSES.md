@@ -1,16 +1,16 @@
-# Rights and provenance of embedded assets
+# Asset rights and provenance
 
-The portable emulator and original 2dfx content to which Károly Vaczkó owns the rights are offered under the MIT License in `LICENSE`. His authorization includes original 2dfx v1.1.0 Easter egg C logic, original SHOW_FW, the public `twodfx_api.h` interface and supporting own assets. The explicit, file-scope author grant for byte-exact egg sources is in `src/firmware_eggs/LICENSE_SCOPE.md`. The original private RP2354B MCU execution, fast-path rendering, PIO/DMA, multicore workers and proprietary implementation code are not included or licensed by this package.
+The portable emulator and original 2dfx content owned by Károly Vaczkó are distributed under the MIT License in `LICENSE`. This includes the original demo logic, SHOW_FW screen builder, API declarations, original logo artwork and portable support code. See `src/demos/LICENSE_SCOPE.md`.
 
-## Third-party-derived showcase material — **excluded from MIT**
+## Third-party-derived demonstration assets
 
-| Program | Embedded content | Attribution / rights note |
+| Demonstration | Asset | Attribution |
 |---|---|---|
-| C9h Wriggler | Screenshot-derived animation graphics, `src/firmware_eggs/egg_C9_wriggler_assets.h` | *Wriggler* (ZX Spectrum, 1985), credited to Devonshire House / Romantic Robot |
-| D3h/D4h/D5h Elite | Original firmware demonstration ship geometry, including Cobra, Asp, Sidewinder, Viper and Krait, `src/firmware_eggs/egg_D3_elite_showcase_data.h` | *Elite* (1984), Ian Bell and David Braben, BBC Micro release by Acornsoft |
+| C9 Wriggler | `src/demos/egg_C9_wriggler_assets.h` | Wriggler (ZX Spectrum, 1985), Devonshire House / Romantic Robot |
+| D3/D5 Elite | `src/demos/egg_D3_elite_showcase_data.h` | Elite (1984), Ian Bell and David Braben; BBC Micro release by Acornsoft |
 
-This content is bundled to reproduce the original hardware showcase. Ownership/redistribution rights may belong to third-party original authors or publishers. **No MIT license, redistribution permission or endorsement from those third parties is claimed or conveyed.** Separately evaluate any permissions necessary before public redistribution. Rights holders can request modification or removal; the showcases do not form part of the public expansion-device command protocol.
+These assets reproduce the 2dfx hardware demonstrations. Their third-party-derived portions are **excluded from the MIT grant**. No redistribution permission or endorsement from the original rights holders is conveyed by the license of the accompanying program code.
 
-Additional references: [Elite source documentation](https://elite.bbcelite.com/about_site/acknowledgements.html), [Wriggler at World of Spectrum](https://worldofspectrum.net/item/0005761/).
+References: [Elite acknowledgements](https://elite.bbcelite.com/about_site/acknowledgements.html), [Wriggler record](https://worldofspectrum.net/item/0005761/).
 
-The ZX1 compressed stream *format* is attributed to Einar Saukas. The portable decoder is independently implemented, and no rights to third-party ZX1 implementation source are implied. ep128emu VM source remains subject to its own license outside this library distribution.
+The ZX1 compressed-stream format is credited to Einar Saukas. The portable decoder is independently implemented. Host emulators retain their own licenses; this package does not change them.

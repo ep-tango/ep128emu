@@ -84,6 +84,7 @@ namespace Ep128Emu {
       bool        enabled;
       int         bufferingMode;
       int         quality;
+      int         pixelArtScale;
       double      brightness;
       double      contrast;
       double      gamma;

@@ -34,6 +34,10 @@
 
 #include "fldisp.hpp"
 #include "gldisp.hpp"
+#include "scale2x.hpp"
+#ifdef ENABLE_GL_SHADERS
+#include "omniscale_shader.hpp"
+#endif
 
 #ifdef WIN32
 #  include <wingdi.h>
@@ -277,8 +281,9 @@ namespace Ep128Emu {
       return false;
     }
     glShaderSource_(GLuint(shaderHandle), GLsizei(1),
-                    (shaderMode_ == 2 ?
-                     &(shaderSourcePAL[0]) : &(shaderSourceQ3[0])),
+                    (shaderMode_ == 3 ? &(shaderSourceOmniScale[0]) :
+                     (shaderMode_ == 2 ?
+                      &(shaderSourcePAL[0]) : &(shaderSourceQ3[0]))),
                     (GLint *) 0);
     glAttachShader_(GLuint(programHandle), GLuint(shaderHandle));
     shaderMode = shaderMode_;
@@ -473,10 +478,12 @@ namespace Ep128Emu {
       colormap(),
       linesChanged((bool *) 0),
       textureBuffer16((uint16_t *) 0),
+      scale2xTextureID(0UL),
       textureID(0UL),
       forceUpdateLineCnt(0),
       forceUpdateLineMask(0),
       redrawFlag(false),
+      hostPresentationPaused(false),
       prvFrameWasOdd(false),
       lastLineNum(-2),
       displayFrameRate(60.0),
@@ -528,6 +535,11 @@ namespace Ep128Emu {
   {
     Fl::remove_idle(&fltkIdleCallback, (void *) this);
     deleteShader();
+    if (scale2xTextureID) {
+      GLuint id = GLuint(scale2xTextureID);
+      scale2xTextureID = 0UL;
+      glDeleteTextures(1, &id);
+    }
     if (textureID) {
       GLuint  tmp = GLuint(textureID);
       textureID = 0UL;
@@ -891,6 +903,162 @@ namespace Ep128Emu {
     Fl::lock();
   }
 
+  void OpenGLDisplay::setPresentationPaused(bool paused)
+  {
+    // Only the FLTK GUI thread calls this method. CPU pause is handled by
+    // VMThread separately; keep existing ring buffers for live resampling
+    // and let paused Next/Previous render straight from lineBuffers.
+    if (hostPresentationPaused == paused)
+      return;
+    if (!paused && videoResampleEnabled) {
+      // Seed the next interpolated frame from the *current*, possibly
+      // frame-stepped paused image rather than the stale pre-pause ring.
+      copyFrameToRingBuffer();
+      ringBufferReadPos = double((ringBufferWritePos + 3) & 3);
+    }
+    hostPresentationPaused = paused;
+    displayFrameRateTimer.reset();
+    inputFrameRateTimer.reset();
+    redrawFlag = true;
+  }
+
+  bool OpenGLDisplay::drawFrame_pixelArt(
+      Message_LineData **frame, double x0, double y0, double x1, double y1)
+  {
+    // A separate persistent host-side texture; never touch the NICK/TVC
+    // scanline buffers, guest VRAM, recording or rewind frame ownership.
+    GLint maxTexture = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexture);
+    if (!frame || maxTexture < 2048)
+      return false;
+    // The screen exposes only a subset of the virtual 1536x1152 or
+    // 3072x2304 pixels. Generate those exact visible samples, not a huge
+    // full-frame texture that is immediately shrunk back to the window.
+    GLint vp[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, vp);
+    int viewWidth = int(double(vp[2]) * (x1 - x0) + 0.5);
+    int viewHeight = int(double(vp[3]) * (y1 - y0) + 0.5);
+    if (viewWidth < 1 || viewHeight < 1)
+      return false;
+    // A 2048 texture is enough on the original GL hardware contract.
+    // On ultra-high-resolution viewports, nearest-neighbor upscaling
+    // from the 2048-wide sampled raster preserves edge colors.
+    const bool isOmniScale = (displayParameters.pixelArtScale == 8);
+    if (!isOmniScale) {
+      if (viewWidth > 2048) viewWidth = 2048;
+      if (viewHeight > 2048) viewHeight = 2048;
+    }
+    const bool isScale4x = (displayParameters.pixelArtScale == 4);
+    try {
+      scale2xInput.resize(768U * 576U);
+      if (isScale4x) scale2xOutput.resize(1536U * 1152U);
+      if (!isOmniScale)
+        pixelArtViewport.resize(size_t(viewWidth) * size_t(viewHeight));
+      unsigned char indices[768];
+      std::memset(indices, 0, sizeof(indices));
+      for (size_t sy = 0; sy < 576U; sy++) {
+        const size_t lineNum = sy + 2U;
+        if (frame[lineNum]) {
+          const unsigned char *compressed = (const unsigned char *) 0;
+          size_t bytes = 0;
+          frame[lineNum]->getLineData(compressed, bytes);
+          decodeLine(indices, compressed, bytes);
+        }
+        else if (sy == 0 || !frame[lineNum - 1U]) {
+          std::memset(indices, 0, sizeof(indices));
+        }
+        uint16_t *lineOut = &scale2xInput[sy * 768U];
+        for (size_t sx = 0; sx < 768U; sx++)
+          lineOut[sx] = colormap(indices[sx]);
+      }
+      if (isOmniScale) {
+        // The source 768x576 image is uploaded directly; shader scales.
+      }
+      else if (isScale4x) {
+        if (!PixelArt::scale2x(scale2xInput.data(), 768U, 576U, 768U,
+                               scale2xOutput.data(), 1536U) ||
+            !PixelArt::scale2xViewport(
+                scale2xOutput.data(), 1536U, 1152U, 1536U,
+                pixelArtViewport.data(), size_t(viewWidth),
+                size_t(viewHeight), size_t(viewWidth)))
+          return false;
+      }
+      else if (!PixelArt::scale2xViewport(
+                   scale2xInput.data(), 768U, 576U, 768U,
+                   pixelArtViewport.data(), size_t(viewWidth),
+                   size_t(viewHeight), size_t(viewWidth))) {
+        return false;
+      }
+    }
+    catch (...) { return false; }
+
+#ifdef ENABLE_GL_SHADERS
+    if (isOmniScale && !compileShader(3)) return false;
+#else
+    if (isOmniScale) return false;
+#endif
+    const GLint uploadWidth = (isOmniScale ? 768 : viewWidth);
+    const GLint uploadHeight = (isOmniScale ? 576 : viewHeight);
+    const void *uploadPixels = (isOmniScale
+                                  ? static_cast<const void *>(scale2xInput.data())
+                                  : static_cast<const void *>(pixelArtViewport.data()));
+    GLint savedBinding = 0;
+    GLint oldUnpack = 4;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &savedBinding);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &oldUnpack);
+    glEnable(GL_TEXTURE_2D);
+    if (!scale2xTextureID) {
+      GLuint id = 0;
+      glGenTextures(1, &id);
+      scale2xTextureID = (unsigned long) id;
+      if (!id) return false;
+      glBindTexture(GL_TEXTURE_2D, id);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2048, 2048, 0,
+                   GL_RGB, GL_UNSIGNED_SHORT_5_6_5, (const GLvoid *) 0);
+    }
+    glBindTexture(GL_TEXTURE_2D, GLuint(scale2xTextureID));
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, uploadWidth, uploadHeight,
+                    GL_RGB, GL_UNSIGNED_SHORT_5_6_5, uploadPixels);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, oldUnpack);
+    glDisable(GL_BLEND);
+    glColor4f(GLfloat(1), GLfloat(1), GLfloat(1), GLfloat(1));
+#ifdef ENABLE_GL_SHADERS
+    if (isOmniScale) {
+      if (!enableShader()) {
+        glBindTexture(GL_TEXTURE_2D, GLuint(savedBinding));
+        return false;
+      }
+      glUniform1f_(glGetUniformLocation_(GLuint(programHandle), "outputWidth"),
+                   GLfloat(viewWidth));
+      glUniform1f_(glGetUniformLocation_(GLuint(programHandle), "outputHeight"),
+                   GLfloat(viewHeight));
+    }
+#endif
+    const GLfloat u = GLfloat(double(uploadWidth) / 2048.0);
+    const GLfloat v = GLfloat(double(uploadHeight) / 2048.0);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0.0f, 0.0f);
+    glVertex2f(GLfloat(x0), GLfloat(y0));
+    glTexCoord2f(u, 0.0f);
+    glVertex2f(GLfloat(x1), GLfloat(y0));
+    glTexCoord2f(u, v);
+    glVertex2f(GLfloat(x1), GLfloat(y1));
+    glTexCoord2f(0.0f, v);
+    glVertex2f(GLfloat(x0), GLfloat(y1));
+    glEnd();
+#ifdef ENABLE_GL_SHADERS
+    if (isOmniScale) disableShader();
+#endif
+    glBindTexture(GL_TEXTURE_2D, GLuint(savedBinding));
+    return true;
+  }
+
   void OpenGLDisplay::displayFrame()
   {
 #if defined(WIN32) || defined(__linux__)
@@ -981,6 +1149,28 @@ namespace Ep128Emu {
     if (x0 >= x1 || y0 >= y1)
       return;
 
+    if (displayParameters.pixelArtScale == 2 ||
+        displayParameters.pixelArtScale == 4 ||
+        displayParameters.pixelArtScale == 8) {
+      Message_LineData **frame = lineBuffers;
+      if (videoResampleEnabled && !hostPresentationPaused) {
+        // Scale2x is intentionally a no-blending pixel-art filter. Keep
+        // the 4-slot resampler consumption advancing, but choose one
+        // completed input frame instead of mixing two pixel colors.
+        const int readPos = int(ringBufferReadPos);
+        double d = inputFrameRate / displayFrameRate;
+        d = (d > 0.01 ? (d < 1.75 ? d : 1.75) : 0.01);
+        ringBufferReadPos += d;
+        while (ringBufferReadPos >= 4.0) ringBufferReadPos -= 4.0;
+        frame = frameRingBuffer[readPos & 3];
+      }
+      if (drawFrame_pixelArt(frame, x0, y0, x1, y1)) {
+        glPopMatrix();
+        glFlush();
+        return;
+      }
+    }
+
     GLuint  textureID_ = GLuint(textureID);
     GLint   savedTextureID = 0;
     glEnable(GL_TEXTURE_2D);
@@ -1065,9 +1255,17 @@ namespace Ep128Emu {
       glPopMatrix();
       glFlush();
     }
-    else if (displayParameters.bufferingMode != 2) {
-      float   blendScale3 = displayParameters.motionBlur;
-      float   blendScale2 = (1.0f - blendScale3) * displayParameters.blendScale;
+    else if (displayParameters.bufferingMode != 2 ||
+             hostPresentationPaused) {
+      // Paused mode always renders the actual last completed lineBuffers,
+      // never an older resampling-ring frame or an interpolated future.
+      // A paused frame must be stable even with motion blur enabled:
+      // drawing the same paused source must never keep blending old pixels.
+      float   blendScale3 = (hostPresentationPaused ? 0.0f :
+                             displayParameters.motionBlur);
+      float   blendScale2 = (hostPresentationPaused ? 1.0f :
+                             (1.0f - blendScale3) *
+                              displayParameters.blendScale);
       if (!(displayParameters.bufferingMode != 0 ||
             (blendScale2 > 0.99f && blendScale2 < 1.01f &&
              blendScale3 < 0.01f))) {
@@ -1284,6 +1482,7 @@ namespace Ep128Emu {
     // resources whenever FLTK reports a new context.
     if (!this->context_valid()) {
       textureID = 0UL;
+      scale2xTextureID = 0UL;
       shaderMode = 0;
       shaderHandle = 0UL;
       programHandle = 0UL;
@@ -1323,10 +1522,10 @@ namespace Ep128Emu {
       forceUpdateTimer.reset();
       redrawFlag = true;
     }
-    if (redrawFlag || videoResampleEnabled) {
+    if (redrawFlag || (videoResampleEnabled && !hostPresentationPaused)) {
       redrawFlag = false;
       displayFrame();
-      if (videoResampleEnabled) {
+      if (videoResampleEnabled && !hostPresentationPaused) {
         double  t = displayFrameRateTimer.getRealTime();
         displayFrameRateTimer.reset();
         t = (t > 0.002 ? (t < 0.25 ? t : 0.25) : 0.002);
@@ -1462,7 +1661,7 @@ namespace Ep128Emu {
           }
           rewindRingResetPending = false;
         }
-        if (videoResampleEnabled) {
+        if (videoResampleEnabled && !hostPresentationPaused) {
           double  t = inputFrameRateTimer.getRealTime();
           inputFrameRateTimer.reset();
           t = (t > 0.002 ? (t < 0.25 ? t : 0.25) : 0.002);
@@ -1503,6 +1702,11 @@ namespace Ep128Emu {
             haveGLShaderFuncs = false;
 #  endif
 #endif
+            if (scale2xTextureID) {
+              GLuint id = GLuint(scale2xTextureID);
+              scale2xTextureID = 0UL;
+              glDeleteTextures(1, &id);
+            }
             GLuint  oldTextureID = GLuint(textureID);
             textureID = 0UL;
             if (oldTextureID)
@@ -1570,7 +1774,7 @@ namespace Ep128Emu {
     }
     if (noInputTimer.getRealTime() > 0.5) {
       noInputTimer.reset(0.25);
-      if (videoResampleEnabled)
+      if (videoResampleEnabled && !hostPresentationPaused)
         copyFrameToRingBuffer();
       redrawFlag = true;
       if (screenshotCallbackFlag)
@@ -1582,7 +1786,7 @@ namespace Ep128Emu {
       forceUpdateLineCnt &= uint8_t(7);
       forceUpdateTimer.reset();
     }
-    return (redrawFlag | videoResampleEnabled);
+    return (redrawFlag | (videoResampleEnabled && !hostPresentationPaused));
   }
 
   int OpenGLDisplay::handle(int event)

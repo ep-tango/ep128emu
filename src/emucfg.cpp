@@ -157,6 +157,9 @@ namespace Ep128Emu {
     defineConfigurationVariable(*this, "display.quality",
                                 display.quality, int(2),
                                 displaySettingsChanged, 0.0, 4.0);
+    defineConfigurationVariable(*this, "display.pixelArtScale",
+                                display.pixelArtScale, int(0),
+                                displaySettingsChanged, 0.0, 8.0);
     defineConfigurationVariable(*this, "display.brightness",
                                 display.brightness, 0.0,
                                 displaySettingsChanged, -0.5, 0.5);
@@ -611,6 +614,7 @@ namespace Ep128Emu {
       VideoDisplay::DisplayParameters dp(videoDisplay.getDisplayParameters());
       dp.displayQuality = display.quality;
       dp.bufferingMode = display.bufferingMode;
+      dp.pixelArtScale = display.pixelArtScale;
       dp.brightness = float(display.brightness);
       dp.contrast = float(display.contrast);
       dp.gamma = float(display.gamma);

@@ -20,6 +20,9 @@ void ep128emuClearRememberedMacOSDragSourceApplication();
 // Asynchronous host-only acoustic relay click (does not alter DAVE audio).
 bool ep128emuPrepareMacOSRelayClick();
 bool ep128emuPlayMacOSRelayClick();
+// Short, quiet, host-only screenshot confirmation; no guest audio changes.
+bool ep128emuPrepareMacOSScreenshotChime();
+bool ep128emuPlayMacOSScreenshotChime();
 #endif
 
 #endif

@@ -27,7 +27,7 @@ class Ep128EmuGUI_DisplayConfigWindow {open
   else
     gui.emulatorWindow->cursor(FL_CURSOR_NONE);
 }} open
-      xywh {224 231 400 450} type Double color 48 visible
+      xywh {224 231 400 490} type Double color 48 visible
     } {
       Fl_Group {} {open
         xywh {10 10 380 235} box THIN_UP_BOX
@@ -260,8 +260,19 @@ class Ep128EmuGUI_DisplayConfigWindow {open
         }
       }
       Fl_Group {} {open
-        xywh {10 255 380 150} box THIN_UP_BOX
+        xywh {10 255 380 190} box THIN_UP_BOX
       } {
+        Fl_Choice pixelArtScaleValuator {
+          label {Pixel art filter}
+          callback {{
+  gui.config.display.pixelArtScale = (o->value() == 3 ? 8 :
+                                       (o->value() == 2 ? 4 :
+                                       (o->value() == 1 ? 2 : 0)));
+  gui.config.displaySettingsChanged = true;
+}}
+          tooltip {Off preserves existing video effects. Scale2x or Scale4x enlarges pixel-art edges without blending; TV/blur effects are bypassed in these modes. Scale4x uses two Scale2x passes. OmniScale requires OpenGL shader support; unavailable contexts fall back to ordinary output.} xywh {20 410 160 25} down_box BORDER_BOX align 8
+          code0 {o->add("Off|Scale2x|Scale4x|OmniScale (OpenGL)");}
+        } {}
         Fl_Light_Button enableDisplayValuator {
           label {Enable display}
           callback {{
@@ -346,6 +357,7 @@ class Ep128EmuGUI_DisplayConfigWindow {open
   gui.config.display.enabled = true;
   gui.config.display.bufferingMode = 0;
   gui.config.display.quality = 2;
+  gui.config.display.pixelArtScale = 0;
   gui.config.display.brightness = 0.0;
   gui.config.display.contrast = 1.0;
   gui.config.display.gamma = 1.0;
@@ -366,7 +378,7 @@ class Ep128EmuGUI_DisplayConfigWindow {open
   gui.config.display.pixelAspectRatio = 1.0;
   updateWindow();
 }}
-        xywh {15 415 170 25} selection_color 50
+        xywh {15 455 170 25} selection_color 50
       }
       Fl_Button {} {
         label Apply
@@ -383,7 +395,7 @@ class Ep128EmuGUI_DisplayConfigWindow {open
   else
     gui.emulatorWindow->cursor(FL_CURSOR_NONE);
 }}
-        xywh {255 415 60 25} selection_color 50
+        xywh {255 455 60 25} selection_color 50
       }
       Fl_Button {} {
         label OK
@@ -401,7 +413,7 @@ class Ep128EmuGUI_DisplayConfigWindow {open
   else
     gui.emulatorWindow->cursor(FL_CURSOR_NONE);
 }}
-        xywh {325 415 60 25} selection_color 50
+        xywh {325 455 60 25} selection_color 50
       }
     }
   }
@@ -466,6 +478,9 @@ class Ep128EmuGUI_DisplayConfigWindow {open
   else
     displayBufferingModeValuator->value(-1);
   displayQualityValuator->value(double(gui.config.display.quality));
+  pixelArtScaleValuator->value(gui.config.display.pixelArtScale == 8 ? 3 :
+                               (gui.config.display.pixelArtScale == 4 ? 2 :
+                               (gui.config.display.pixelArtScale == 2 ? 1 : 0)));
   pixelAspectRatioValuator->value(gui.config.display.pixelAspectRatio);
   displayHueShiftValuator->value(gui.config.display.hueShift);
   displaySaturationValuator->value(gui.config.display.saturation);

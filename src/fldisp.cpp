@@ -23,8 +23,10 @@
 #include <FL/Fl.H>
 #include <FL/Fl_Window.H>
 #include <FL/fl_draw.H>
+#include <FL/Fl_Image.H>
 
 #include "fldisp.hpp"
+#include "scale2x.hpp"
 
 static int defaultFLTKEventCallback(void *userData, int event)
 {
@@ -799,6 +801,71 @@ namespace Ep128Emu {
     delete[] linesChanged;
   }
 
+  bool FLTKDisplay::drawPixelArtFrame(int x, int y, int width, int height)
+  {
+    // The same 768x576 completed-frame line mapping as the screenshot path.
+    // All decoding and scaling is host-side; video recording/rewind/VM data
+    // continues to read the original 768-pixel compressed scanlines.
+    try {
+      scale2xInput.resize(768U * 576U);
+      const bool isScale4x = (displayParameters.pixelArtScale == 4);
+      const size_t viewWidth = size_t(width), viewHeight = size_t(height);
+      if (viewHeight == 0 ||
+          viewWidth > std::numeric_limits<size_t>::max() / viewHeight)
+        return false;
+      pixelArtViewport.resize(viewWidth * viewHeight);
+      if (isScale4x) scale2xOutput.resize(1536U * 1152U);
+      unsigned char indices[768];
+      std::memset(indices, 0, sizeof(indices));
+      for (size_t sy = 0; sy < 576U; sy++) {
+        const size_t lineNum = sy + 2U;
+        if (lineBuffers[lineNum]) {
+          const unsigned char *srcLine = (const unsigned char *) 0;
+          size_t srcBytes = 0;
+          lineBuffers[lineNum]->getLineData(srcLine, srcBytes);
+          decodeLine(indices, srcLine, srcBytes);
+        }
+        else if (sy == 0 || !lineBuffers[lineNum - 1U]) {
+          std::memset(indices, 0, sizeof(indices));
+        }
+        uint32_t *dstLine = &scale2xInput[sy * 768U];
+        for (size_t sx = 0; sx < 768U; sx++) {
+          const uint32_t rgb = colormap(indices[sx]);
+          dstLine[sx] = 0xFF000000U | (rgb >> 16)
+                        | (rgb & 0x0000FF00U) | ((rgb & 255U) << 16);
+        }
+      }
+      if (isScale4x) {
+        if (!PixelArt::scale2x(scale2xInput.data(), 768U, 576U, 768U,
+                               scale2xOutput.data(), 1536U) ||
+            !PixelArt::scale2xViewport(
+                scale2xOutput.data(), 1536U, 1152U, 1536U,
+                pixelArtViewport.data(), viewWidth, viewHeight, viewWidth))
+          return false;
+      }
+      else if (!PixelArt::scale2xViewport(
+                   scale2xInput.data(), 768U, 576U, 768U,
+                   pixelArtViewport.data(), viewWidth, viewHeight, viewWidth)) {
+        return false;
+      }
+      // The virtual 2x/4x full raster has exactly the same pixels at
+      // these sampling coordinates, but was never allocated. Drawing the
+      // finished host-sized image directly avoids FLTK's costly 4x
+      // image-scale and reduces host memory and resampling overhead.
+      Fl_RGB_Image image(
+          reinterpret_cast<const unsigned char *>(pixelArtViewport.data()),
+          width, height, 4);
+      image.draw(x, y);
+      forceUpdateLineMask = 0;
+      for (size_t n = 0; n < 289; n++)
+        linesChanged[n] = false;
+      return true;
+    }
+    catch (...) {
+      return false;            // unsupported allocation => legacy path
+    }
+  }
+
   void FLTKDisplay::displayFrame()
   {
     int     windowWidth_ = this->w();
@@ -863,6 +930,11 @@ namespace Ep128Emu {
     }
 
     if (displayWidth_ <= 0 || displayHeight_ <= 0)
+      return;
+
+    if ((displayParameters.pixelArtScale == 2 ||
+         displayParameters.pixelArtScale == 4) &&
+        drawPixelArtFrame(x0, y0, displayWidth_, displayHeight_))
       return;
 
     if (forceUpdateLineMask) {

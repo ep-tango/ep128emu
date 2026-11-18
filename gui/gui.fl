@@ -141,6 +141,8 @@ class Ep128EmuGUI {open
   decl {bool betaDOSInputPressed;} {}
   decl {std::string debuggerDirectory;} {}
   decl {std::string screenshotDirectory;} {}
+  decl {std::string autoScreenshotDirectory;} {}
+  decl {bool screenshotSoundEnabled;} {}
   decl {std::string screenshotFileName;} {}
   decl {unsigned int screenshotSequence;} {}
   decl {std::string recentDiskImages[10];} {}
@@ -306,6 +308,11 @@ class Ep128EmuGUI {open
   decl {static void menuCallback_File_StopAVIRecord(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_File_Screenshot(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_File_ScreenshotAs(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_File_ScreenshotSound(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_File_AutoScreenshotFolder(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_File_AutoScreenshotDefault(Fl_Widget *o, void *v);} {}
+  decl {static void screenshotNoticeTimeout(void *userData);} {}
+  decl {void screenshotSavedNotice(const std::string& path);} {}
   decl {static void screenshotAsCallback(void *userData, const unsigned char *buf, int w, int h);} {}
   decl {void saveScreenshot(const unsigned char *buf, int w, int h, bool saveAs);} {}
   decl {bool checkWritableSDDBeforeShutdown();} {}
@@ -549,6 +556,7 @@ class Ep128EmuGUI {open
   Function {~Ep128EmuGUI()} {open
   } {
     code {{
+  Fl::remove_timeout(&screenshotNoticeTimeout, (void *) this);
   debugWindow->hide();
   ep128emuShutdownBetaPre(*this);
   vmThread.quit(true);

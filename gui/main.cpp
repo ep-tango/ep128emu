@@ -515,6 +515,7 @@ int main(int argc, char **argv)
     // First tape REM engagement may occur immediately during guest startup.
     // Warm the host sound silently before creating or running the guest VM.
     (void) ep128emuPrepareMacOSRelayClick();
+    (void) ep128emuPrepareMacOSScreenshotChime();
     // Replace FLTK's generic macOS About panel so the native application menu
     // shows this build identity and the exact toolkit patch version.
     Fl_Sys_Menu_Bar::about(&macOSAboutCallback, (void *) 0);

@@ -73,6 +73,8 @@ namespace Ep128Emu {
     bool enableShader();
     void disableShader();
     void displayFrame();
+    bool drawFrame_pixelArt(Message_LineData **lineBuffers_,
+                           double x0, double y0, double x1, double y1);
     void initializeGLDisplay();
     virtual void resetRewindOutputBuffers();
     void drawFrame_quality0(Message_LineData **lineBuffers_,
@@ -97,12 +99,17 @@ namespace Ep128Emu {
     bool          *linesChanged;
     // 1024x16 texture in 16-bit (R5G6B5) format
     uint16_t      *textureBuffer16;
+    std::vector<uint16_t> scale2xInput;
+    std::vector<uint16_t> scale2xOutput;
+    std::vector<uint16_t> pixelArtViewport; // visible-only upload, <=2048²
+    unsigned long scale2xTextureID;
    protected:
     unsigned long textureID;
    private:
     uint8_t       forceUpdateLineCnt;
     uint8_t       forceUpdateLineMask;
     bool          redrawFlag;
+    bool          hostPresentationPaused; // GUI-thread owned, no guest change
     bool          prvFrameWasOdd;
     int           lastLineNum;
     Timer         noInputTimer;
@@ -137,6 +144,7 @@ namespace Ep128Emu {
      * redraw() needs to be called to update the display.
      */
     virtual bool checkEvents();
+    virtual void setPresentationPaused(bool paused);
    protected:
     virtual void draw();
    public:

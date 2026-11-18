@@ -236,6 +236,10 @@ namespace Ep128Emu {
      * redraw() needs to be called to update the display.
      */
     virtual bool checkEvents() = 0;
+    // GUI-thread-only presentation fence. The software renderer has no
+    // asynchronous resampler; OpenGL overrides this to bypass its 4-slot
+    // interpolation ring while the guest is paused. No guest state changes.
+    virtual void setPresentationPaused(bool paused) { (void) paused; }
     /*!
      * Returns true if there are any video frames in the message queue,
      * so the next call to checkEvents() would return true.
@@ -293,8 +297,12 @@ namespace Ep128Emu {
       }
     };
     void displayFrame();
+    bool drawPixelArtFrame(int x, int y, int width, int height);
     virtual void resetRewindOutputBuffers();
     // ----------------
+    std::vector<uint32_t> scale2xInput;
+    std::vector<uint32_t> scale2xOutput;
+    std::vector<uint32_t> pixelArtViewport; // only visible output pixels
     Colormap      colormap;
     /*!
      * linesChanged[n / 2] is true if line n has changed in the current frame

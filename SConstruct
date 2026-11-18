@@ -459,7 +459,7 @@ if userMinMacosVersion:
 if enableA02HW:
     # All consumer TUs must agree on opt-in VM class layout.
     ep128emuLibEnvironment.Append(CPPDEFINES = ['ENABLE_A02_2DFX'])
-    ep128emuLibEnvironment.Append(CPPPATH = ['./third_party/2dfxemu/include'])
+    ep128emuLibEnvironment.Append(CPPPATH = ['./third_party/2dfxemu/src/include'])
 
 ep128emuGUIEnvironment = copyEnvironment(ep128emuLibEnvironment)
 if mingwCrossCompile:
@@ -703,41 +703,39 @@ ep128emuLib = ep128emuLibEnvironment.StaticLibrary('ep128emu',
 if enableA02HW or int(ARGUMENTS.get('a02core', 0)):
     a02CoreEnvironment = copyEnvironment(ep128emuLibEnvironment)
     a02CoreEnvironment.Append(CPPPATH = [
-        './third_party/2dfxemu/include',
-        './third_party/2dfxemu/core',
-        './third_party/2dfxemu/assets',
-        './third_party/2dfxemu/firmware_eggs',
-        './third_party/2dfxemu/firmware_eggs/portable'])
+        './third_party/2dfxemu/src/include',
+        './third_party/2dfxemu/src/core',
+        './third_party/2dfxemu/src/assets',
+        './third_party/2dfxemu/src/demos'])
     a02CoreEnvironment.Append(CCFLAGS = ['-std=c99'])
     a02CoreSources = [
-        'third_party/2dfxemu/assets/logo_2dfx_asset.c',
-        'third_party/2dfxemu/core/twodfx_3d.c',
-        'third_party/2dfxemu/core/twodfx_emu.c',
-        'third_party/2dfxemu/core/twodfx_raster.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C0_logo.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C1_benchmark.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C2_primitives.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C3_text.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C4_blit.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C5_pattern.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C6_tilemap.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C7_pong_basic.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C8_pong_wow.c',
-        'third_party/2dfxemu/firmware_eggs/egg_C9_wriggler.c',
-        'third_party/2dfxemu/firmware_eggs/egg_CA_boulder.c',
-        'third_party/2dfxemu/firmware_eggs/egg_CB_arcpie_benchmark.c',
-        'third_party/2dfxemu/firmware_eggs/egg_CC_diag.c',
-        'third_party/2dfxemu/firmware_eggs/egg_CD_blit_full.c',
-        'third_party/2dfxemu/firmware_eggs/egg_CE_layer.c',
-        'third_party/2dfxemu/firmware_eggs/egg_CF_tvc_bitpattern.c',
-        'third_party/2dfxemu/firmware_eggs/egg_D0_tvc_crisp_tearing.c',
-        'third_party/2dfxemu/firmware_eggs/egg_D1_ruler.c',
-        'third_party/2dfxemu/firmware_eggs/egg_D2_xy_offset.c',
-        'third_party/2dfxemu/firmware_eggs/egg_D3_elite_showcase.c',
-        'third_party/2dfxemu/firmware_eggs/egg_D4_3d_scope.c',
-        'third_party/2dfxemu/firmware_eggs/egg_D5_public_mesh.c',
-        'third_party/2dfxemu/firmware_eggs/egg_DF_graphics_test.c',
-        'third_party/2dfxemu/firmware_eggs/firmware_page.c',
+        'third_party/2dfxemu/src/assets/logo_2dfx_asset.c',
+        'third_party/2dfxemu/src/core/twodfx_3d.c',
+        'third_party/2dfxemu/src/core/twodfx_emu.c',
+        'third_party/2dfxemu/src/core/twodfx_raster.c',
+        'third_party/2dfxemu/src/demos/egg_C0_logo.c',
+        'third_party/2dfxemu/src/demos/egg_C1_benchmark.c',
+        'third_party/2dfxemu/src/demos/egg_C2_primitives.c',
+        'third_party/2dfxemu/src/demos/egg_C3_text.c',
+        'third_party/2dfxemu/src/demos/egg_C4_blit.c',
+        'third_party/2dfxemu/src/demos/egg_C5_pattern.c',
+        'third_party/2dfxemu/src/demos/egg_C6_tilemap.c',
+        'third_party/2dfxemu/src/demos/egg_C7_pong_basic.c',
+        'third_party/2dfxemu/src/demos/egg_C8_pong_wow.c',
+        'third_party/2dfxemu/src/demos/egg_C9_wriggler.c',
+        'third_party/2dfxemu/src/demos/egg_CA_boulder.c',
+        'third_party/2dfxemu/src/demos/egg_CB_arcpie_benchmark.c',
+        'third_party/2dfxemu/src/demos/egg_CC_diag.c',
+        'third_party/2dfxemu/src/demos/egg_CD_blit_full.c',
+        'third_party/2dfxemu/src/demos/egg_CE_layer.c',
+        'third_party/2dfxemu/src/demos/egg_CF_tvc_bitpattern.c',
+        'third_party/2dfxemu/src/demos/egg_D0_tvc_crisp_tearing.c',
+        'third_party/2dfxemu/src/demos/egg_D1_ruler.c',
+        'third_party/2dfxemu/src/demos/egg_D2_xy_offset.c',
+        'third_party/2dfxemu/src/demos/egg_D3_elite_showcase.c',
+        'third_party/2dfxemu/src/demos/egg_D4_graphics_test.c',
+        'third_party/2dfxemu/src/demos/egg_D5_public_mesh.c',
+        'third_party/2dfxemu/src/demos/firmware_page.c',
     ]
     a02CoreLibrary = a02CoreEnvironment.StaticLibrary(
         'build/a02/a02_2dfx', a02CoreSources)
@@ -876,6 +874,9 @@ if hostMacBuild:
             'mkdir -p ep128emu.app/Contents/MacOS ; cp -pf $SOURCES $TARGET')
     Command('ep128emu.app/Contents/Resources/EP_rele.wav',
             'resource/EP_rele.wav',
+            'mkdir -p ep128emu.app/Contents/Resources ; cp -pf $SOURCES $TARGET')
+    Command('ep128emu.app/Contents/Resources/shot.wav',
+            'resource/shot.wav',
             'mkdir -p ep128emu.app/Contents/Resources ; cp -pf $SOURCES $TARGET')
     # Keep the original per-machine icon artwork with every macOS .app.
     # The Enterprise app/Finder icon remains the existing ep128emu.icns.

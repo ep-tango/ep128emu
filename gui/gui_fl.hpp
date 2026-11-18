@@ -134,6 +134,8 @@ private:
   bool betaDOSInputPressed;
   std::string debuggerDirectory;
   std::string screenshotDirectory;
+  std::string autoScreenshotDirectory;
+  bool screenshotSoundEnabled;
   std::string screenshotFileName;
   unsigned int screenshotSequence;
   std::string recentDiskImages[10];
@@ -293,6 +295,11 @@ private:
   static void menuCallback_File_StopAVIRecord(Fl_Widget *o, void *v);
   static void menuCallback_File_Screenshot(Fl_Widget *o, void *v);
   static void menuCallback_File_ScreenshotAs(Fl_Widget *o, void *v);
+  static void menuCallback_File_ScreenshotSound(Fl_Widget *o, void *v);
+  static void menuCallback_File_AutoScreenshotFolder(Fl_Widget *o, void *v);
+  static void menuCallback_File_AutoScreenshotDefault(Fl_Widget *o, void *v);
+  static void screenshotNoticeTimeout(void *userData);
+  void screenshotSavedNotice(const std::string& path);
   static void screenshotAsCallback(void *userData, const unsigned char *buf, int w, int h);
   void saveScreenshot(const unsigned char *buf, int w, int h, bool saveAs);
   bool checkWritableSDDBeforeShutdown();

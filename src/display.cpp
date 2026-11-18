@@ -40,6 +40,9 @@ namespace Ep128Emu {
                       : 0);
     bufferingMode = (src.bufferingMode > 0 ?
                      (src.bufferingMode < 2 ? src.bufferingMode : 2) : 0);
+    pixelArtScale = ((src.pixelArtScale == 2 || src.pixelArtScale == 4 ||
+                      src.pixelArtScale == 8)
+                     ? src.pixelArtScale : 0);
     if (src.indexToRGBFunc)
       indexToRGBFunc = src.indexToRGBFunc;
     else
@@ -100,7 +103,7 @@ namespace Ep128Emu {
 
   VideoDisplay::DisplayParameters::DisplayParameters()
     : displayQuality(2),
-      bufferingMode(0),
+      bufferingMode(0), pixelArtScale(0),
       indexToRGBFunc(&defaultIndexToRGBFunc),
       brightness(0.0f), contrast(1.0f), gamma(1.0f),
       hueShift(0.0f), saturation(1.0f),

@@ -9,6 +9,7 @@ static NSTitlebarAccessoryViewController *ep128emuStatusController = nil;
 static NSTextField *ep128emuStatusField = nil;
 static NSRunningApplication *ep128emuDragSourceApplication = nil;
 static NSSound *ep128emuRelayClickSound = nil;
+static NSSound *ep128emuScreenshotChime = nil;
 
 // Update the running application's Dock tile without modifying its .app
 // bundle icon, executable identity or the existing machine-specific window
@@ -100,6 +101,35 @@ bool ep128emuPlayMacOSRelayClick()
   }
 }
 
+
+// Prewarm to avoid blocking F12 after writing the PNG. Missing sound is silent.
+bool ep128emuPrepareMacOSScreenshotChime()
+{
+  @autoreleasepool {
+    if (ep128emuScreenshotChime) return true;
+    NSString *file = [[NSBundle mainBundle]
+        pathForResource:@"shot" ofType:@"wav"];
+    if (!file) return false;
+    NSSound *s = [[NSSound alloc] initWithContentsOfFile:file byReference:YES];
+    if (!s) return false;
+    [s setVolume:0.0f];
+    const BOOL ok = [s play];
+    if (ok) [s stop];
+    [s setVolume:0.65f];
+    ep128emuScreenshotChime = s;
+    return ok ? true : false;
+  }
+}
+
+bool ep128emuPlayMacOSScreenshotChime()
+{
+  @autoreleasepool {
+    if (!ep128emuScreenshotChime && !ep128emuPrepareMacOSScreenshotChime())
+      return false;
+    if ([ep128emuScreenshotChime isPlaying]) return true;
+    return [ep128emuScreenshotChime play] ? true : false;
+  }
+}
 
 static void ep128emuEnsureMacOSTitlebarStatus(Fl_Window *window)
 {

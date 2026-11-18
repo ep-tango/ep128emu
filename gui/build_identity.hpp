@@ -1,7 +1,7 @@
 // Shared, source-identical platform identity for the current unified release builds.
 #ifndef EP128EMU_BUILD_IDENTITY_HPP
 #define EP128EMU_BUILD_IDENTITY_HPP
-#define EP128EMU_CUSTOM_VERSION "2.2.0"
+#define EP128EMU_CUSTOM_VERSION "2.2.1"
 #if defined(_WIN64) || defined(__MINGW64__)
 # define EP128EMU_BUILD_PLATFORM "Windows x64"
 #elif defined(_WIN32) || defined(WIN32) || defined(__MINGW32__)

@@ -16,6 +16,11 @@ decl {\#include <vector>} {}
 
 decl {\#include <FL/Fl_Text_Buffer.H>} {} 
 
+decl {class Fl_Browser;} {}
+
+decl {class Fl_Box;} {}
+
+
 class Ep128EmuGUI_DebugWindow {open
 } {
   decl {friend class Ep128EmuGUIMonitor;} {public
@@ -41,6 +46,29 @@ class Ep128EmuGUI_DebugWindow {open
   decl {std::string breakPointLists[6];} {}
   decl {std::string tmpBuffer;} {}
   decl {Ep128EmuGUI_LuaScript luaScript;} {}
+  decl {Fl_Double_Window *lptWindow;} {}
+  decl {Fl_Browser *lptTable;} {}
+  decl {Fl_Group *lptBias;} {}
+  decl {Fl_Box *lptInfo;} {}
+  decl {Fl_Button *lptEditToggle;} {}
+  decl {Fl_Group *lptEditByte;} {}
+  decl {Fl_Input *lptEditValue;} {}
+  decl {Fl_Button *lptApplyButton;} {}
+  decl {uint8_t lptRaw[512][16];} {}
+  decl {uint16_t lptAddresses[512];} {}
+  decl {uint16_t lptViewBase;} {}
+  decl {unsigned int lptRowCount;} {}
+  decl {void updateLPTEditSelection();} {}
+  decl {void applyLPTEdit();} {}
+  decl {static void lptEditSelectionCallback(Fl_Widget *, void *);} {}
+  decl {static void lptEditToggleCallback(Fl_Widget *, void *);} {}
+  decl {static void lptEditApplyCallback(Fl_Widget *, void *);} {}
+  decl {void showLPTViewer();} {public
+  }
+  decl {void refreshLPTViewer();} {public
+  }
+  decl {static void lptRefreshCallback(Fl_Widget *, void *);} {}
+  decl {static void lptCloseCallback(Fl_Widget *, void *);} {}
   decl {Ep128EmuGUI_DebugWindow(Ep128EmuGUI& gui_);} {public
   }
   decl {~Ep128EmuGUI_DebugWindow();} {public
@@ -123,6 +151,12 @@ class Ep128EmuGUI_DebugWindow {open
               label {I/O registers}
               xywh {555 70 375 117} type Multiline align 5 textfont 5 textcolor 2
               code0 {o->cursor_color(FL_BACKGROUND2_COLOR);}
+            }
+            Fl_Button lptViewerButton {
+              label LPT
+              callback {showLPTViewer();}
+              tooltip {Read-only Enterprise NICK Line Parameter Table viewer}
+              xywh {850 45 75 22} color 50 selection_color 51
             }
           }
           Fl_Group {} {open

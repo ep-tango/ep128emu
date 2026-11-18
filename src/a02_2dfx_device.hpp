@@ -155,7 +155,11 @@ namespace Ep128Emu {
       if (!enabled_ || !touched_ || !src || !nBytes || *nBytes == 0)
         return src;
       const bool tvc = (twodfx_emu_machine(device_) == TWODFX_EMU_TVC);
-      const unsigned lineOffset = tvc ? 19U : 18U;
+      // +3 NICK raster rows vs the original EP integration: the Digger
+      // static 2DFX sprites now match the 2.0.12.8 reference exactly.
+      // This is screenshot-reference parity, not yet physical-card PASS.
+      // TVC has independent CRTC sync and retains its 19-row mapping.
+      const unsigned lineOffset = tvc ? 19U : 21U;
       if (line_ < lineOffset ||
           line_ - lineOffset >= twodfx_emu_framebuffer_height(device_))
         return src;

@@ -56,6 +56,8 @@ namespace Ep128Emu {
        * 2: double buffered display with resampling to monitor refresh rate
        */
       int     bufferingMode;
+      // 0: original; 2: Scale2x; 4: Scale4x; 8: OmniScale OpenGL.
+      int     pixelArtScale;
       /*!
        * Function to convert 8-bit color indices to red, green, and blue
        * levels (in the range 0.0 to 1.0); if NULL, greyscale is assumed.

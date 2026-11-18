@@ -47,6 +47,7 @@
 # include <FL/Fl_Pixmap.H>
 # include <FL/Fl_Double_Window.H>
 # include "a02_logo_xpm.hpp"
+# include "a02_status_layout.hpp"
 #endif
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Window.H>
@@ -798,6 +799,32 @@ static bool ep128emuPlayWindowsRelayClick()
 }
 #endif
 
+#ifdef WIN32
+// Fully asynchronous host-only confirmation, independent of emulator audio.
+// Windows packages use the EXE directory, older Win7 layouts resource/.
+static bool ep128emuPlayWindowsScreenshotChime()
+{
+  wchar_t exePath[32768];
+  const DWORD n = GetModuleFileNameW(NULL, exePath, 32768);
+  if (!n || n >= 32768) return false;
+  std::wstring path(exePath, n);
+  const size_t slash = path.find_last_of(L"/\\");
+  if (slash == std::wstring::npos) return false;
+  path.resize(slash + 1U);
+  const std::wstring exeDir(path);
+  path += L"shot.wav";
+  DWORD attrs = GetFileAttributesW(path.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+    path = exeDir + L"resource\\shot.wav";
+    attrs = GetFileAttributesW(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY))
+      return false;
+  }
+  return PlaySoundW(path.c_str(), NULL,
+      SND_FILENAME | SND_ASYNC | SND_NODEFAULT | SND_NOSTOP) != FALSE;
+}
+#endif
+
 static std::string findFFmpegExecutable()
 {
 #ifdef WIN32
@@ -1111,6 +1138,8 @@ void Ep128EmuGUI::init_()
   betaDOSInputPressed = false;
   debuggerDirectory = defaultDir_;
   screenshotDirectory = defaultDir_;
+  autoScreenshotDirectory.clear();
+  screenshotSoundEnabled = true;
   screenshotFileName = "";
   screenshotSequence = 0U;
   for (int i = 0; i < 10; i++) {
@@ -1140,6 +1169,8 @@ void Ep128EmuGUI::init_()
   guiConfig.createKey("gui.romImageDirectory", romImageDirectory);
   guiConfig.createKey("gui.debuggerDirectory", debuggerDirectory);
   guiConfig.createKey("gui.screenshotDirectory", screenshotDirectory);
+  guiConfig.createKey("gui.autoScreenshotDirectory", autoScreenshotDirectory);
+  guiConfig.createKey("gui.screenshotSoundEnabled", screenshotSoundEnabled);
   guiConfig.createKey("gui.mainWindowPositionX", mainWindowPositionX);
   guiConfig.createKey("gui.mainWindowPositionY", mainWindowPositionY);
   guiConfig.createKey("gui.runtimeHUDEnabled", runtimeHUDEnabled);
@@ -1238,7 +1269,7 @@ void Ep128EmuGUI::updateDisplay_windowMode()
         (typeid(vm) == typeid(Ep128::Ep128VM) ||
          typeid(vm) == typeid(TVC64::TVC64VM)) &&
         newWindowWidth >= topRowMinWidth)
-      statusWidth = (newWindowWidth < 791 ? newWindowWidth - 385 : 406);
+      statusWidth = Ep128Emu::A02StatusLayout::groupWidth(newWindowWidth);
 #endif
     statusDisplayGroup->resize(newWindowWidth - statusWidth,
                                (newWindowWidth >= topRowMinWidth ?
@@ -1285,7 +1316,7 @@ void Ep128EmuGUI::updateDisplay_windowSize()
           (typeid(vm) == typeid(Ep128::Ep128VM) ||
            typeid(vm) == typeid(TVC64::TVC64VM)) &&
           newWindowWidth >= topRowMinWidth)
-        statusWidth = (newWindowWidth < 791 ? newWindowWidth - 385 : 406);
+        statusWidth = Ep128Emu::A02StatusLayout::groupWidth(newWindowWidth);
 #endif
       int h = newWindowHeight - (newWindowWidth >= topRowMinWidth ?
                                  30 : 60);
@@ -1616,30 +1647,45 @@ void Ep128EmuGUI::updateRecordingStatusDisplay()
   const int y0 = sy + 5;
   int x0 = sx + 151;
 #ifdef ENABLE_A02_2DFX
-  // Keep both 102px recording timers right-aligned when the status group
-  // widens; x151..358 at 360px, x197..404 at 406px.
+  // When recording, the logo/tape description is hidden. Both recording
+  // timers fit immediately after the REM/demo indicators; a single recorder
+  // never competes with the tape clock at the common 406..472 widths.
   if (a02Enabled && a02LogoStatus)
-    x0 = sx + statusDisplayGroup->w() - 209;
+    x0 = sx + Ep128Emu::A02StatusLayout::recordStartX();
 #endif
 
 #ifdef ENABLE_A02_2DFX
   if (a02LogoStatus && a02PowerLED) {
     a02LogoStatus->hide();
     a02PowerLED->hide();
-    // REM labels and 11px LEDs always retain their original dimensions.
+    // Restore the original disk/REM gap: disk ends at x32; REM starts x38.
+    // The optional demo P/R indicator occupies a narrow dedicated slot
+    // between REM2 and 2DFX, never painted over the logo or REM text.
     remCaptionDisplay->label("REM:");
-    remCaptionDisplay->resize(sx + 38, sy + 5, 30, 20);
-    rem1StatusDisplay->resize(sx + 70, sy + 10, 11, 11);
-    rem1NumberDisplay->resize(sx + 82, sy + 5, 11, 20);
-    rem2StatusDisplay->resize(sx + 96, sy + 10, 11, 11);
-    rem2NumberDisplay->resize(sx + 108, sy + 5, 11, 20);
-    demoStatusDisplay2->resize(sx + 131, sy + 5, 14, 20);
+    remCaptionDisplay->resize(sx + Ep128Emu::A02StatusLayout::remCaptionX(),
+                              sy + 5, 30, 20);
+    rem1StatusDisplay->resize(sx + Ep128Emu::A02StatusLayout::rem1LedX(),
+                              sy + 10, 11, 11);
+    rem1NumberDisplay->resize(sx + Ep128Emu::A02StatusLayout::rem1NumberX(),
+                              sy + 5, 11, 20);
+    rem2StatusDisplay->resize(sx + Ep128Emu::A02StatusLayout::rem2LedX(),
+                              sy + 10, 11, 11);
+    rem2NumberDisplay->resize(sx + Ep128Emu::A02StatusLayout::rem2NumberX(),
+                              sy + 5, 11, 20);
+    if (a02Enabled)
+      demoStatusDisplay2->resize(sx + Ep128Emu::A02StatusLayout::demoBadgeX(),
+          sy + 5, Ep128Emu::A02StatusLayout::demoBadgeWidth(), 20);
+    else
+      demoStatusDisplay2->resize(sx + 131, sy + 5, 14, 20);
 
     if (a02Enabled) {
-      // Disk/REM/logo/LED offsets are untouched: their spacing is invariant.
-      // Added width is assigned to tape info without changing bar height.
-      a02LogoStatus->resize(sx + 148, sy + 5, 52, 20);
-      a02PowerLED->resize(sx + 203, sy + 10, 11, 11);
+      // REM2 ends x119, demo x121..133, logo x134..186, LED x189..200.
+      // The black clock remains right-anchored; 100 FLTK units matches the
+      // original emulator and returns another 10 units to tape information.
+      a02LogoStatus->resize(sx + Ep128Emu::A02StatusLayout::logoX(),
+                            sy + 5, Ep128Emu::A02StatusLayout::logoWidth(), 20);
+      a02PowerLED->resize(sx + Ep128Emu::A02StatusLayout::powerLedX(),
+                          sy + 10, 11, 11);
       a02PowerLED->color(a02EngineActive ?
           fl_rgb_color(38, 159, 95) : fl_rgb_color(88, 90, 92));
       // Recording timers take precedence over logo/LED, as before.
@@ -1647,15 +1693,18 @@ void Ep128EmuGUI::updateRecordingStatusDisplay()
         a02LogoStatus->show();
         a02PowerLED->show();
       }
-      const int counterStart = statusDisplayGroup->w() - 83;
-      // LED ends at x214; tape text starts x220: deliberate 6px gap.
-      // At 406px width the label grows from 60px to 102px, without
-      // moving the recording counter or shrinking the REM indicators.
-      tapeInfoDisplay->resize(sx + 220, y0, counterStart - 221, 20);
+      const int groupWidth = statusDisplayGroup->w();
+      const int counterStart = Ep128Emu::A02StatusLayout::counterX(groupWidth);
+      tapeInfoDisplay->resize(sx + Ep128Emu::A02StatusLayout::tapeInfoX(), y0,
+          Ep128Emu::A02StatusLayout::tapeInfoWidth(groupWidth), 20);
       tapeInfoDisplay->align(Fl_Align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE |
                                     FL_ALIGN_CLIP));
-      tapePositionDisplay->resize(sx + counterStart, y0, 81, 20);
-      tapeStatusDisplay->resize(sx + counterStart, y0, 20, 20);
+      tapePositionDisplay->resize(sx + counterStart, y0,
+          Ep128Emu::A02StatusLayout::counterWidth(), 20);
+      tapePositionDisplay->align(Fl_Align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE |
+                                        FL_ALIGN_CLIP));
+      tapeStatusDisplay->resize(sx + counterStart + 4, y0, 20, 20);
+      tapeStatusDisplay->align(Fl_Align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE));
     }
     else {
       tapeInfoDisplay->align(Fl_Align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE));
@@ -1695,7 +1744,12 @@ void Ep128EmuGUI::updateRecordingStatusDisplay()
     audioRecordStatusDisplay->show();
   }
   else {
-    tapePositionDisplay->show();
+    // Below 760px of combined menu+status space, one timer occupies the
+    // same compact slot as the tape clock. Never draw two counters on top.
+    if (a02Enabled && statusDisplayGroup->w() < 370)
+      tapePositionDisplay->hide();
+    else
+      tapePositionDisplay->show();
     Fl_Group *g = (oldVideoRecordingFlag ?
                    videoRecordStatusDisplay : audioRecordStatusDisplay);
     Fl_Box *l = (oldVideoRecordingFlag ?
@@ -1979,11 +2033,12 @@ void Ep128EmuGUI::updateDisplay(double t)
       s = int((newTapePosition / 10L) % 60L);
       m = int((newTapePosition / 600L) % 60L);
       h = int((newTapePosition / 36000L) % 100L);
-      std::sprintf(&(tmpBuf[0]), "%2d:%02d:%02d.%d ", h, m, s, ds);
+      std::snprintf(&(tmpBuf[0]), sizeof(tmpBuf),
+                    "%02d:%02d:%02d.%d", h, m, s, ds);
       tapePositionDisplay->copy_label(&(tmpBuf[0]));
     }
     else
-      tapePositionDisplay->label("-:--:--.- ");
+      tapePositionDisplay->label("--:--:--.-");
     tapePositionDisplay->redraw();
     tapeStatusDisplay->redraw();
   }
@@ -2368,6 +2423,17 @@ void Ep128EmuGUI::createMenus()
                    (char *) 0, &menuCallback_File_Screenshot, (void *) this);
   mainMenuBar->add("File/Save screenshot as...",
                    (char *) 0, &menuCallback_File_ScreenshotAs, (void *) this);
+  mainMenuBar->add("File/Automatic screenshot folder/Choose...",
+                   (char *) 0, &menuCallback_File_AutoScreenshotFolder,
+                   (void *) this);
+  mainMenuBar->add("File/Automatic screenshot folder/Use Pictures folder",
+                   (char *) 0, &menuCallback_File_AutoScreenshotDefault,
+                   (void *) this);
+#if defined(__APPLE__) || defined(WIN32)
+  mainMenuBar->add("File/Screenshot confirmation sound", (char *) 0,
+                   &menuCallback_File_ScreenshotSound, (void *) this,
+                   FL_MENU_TOGGLE | (screenshotSoundEnabled ? FL_MENU_VALUE : 0));
+#endif
   mainMenuBar->add("File/Quit (Shift+F12)",
                    (char *) 0, &menuCallback_File_Quit, (void *) this);
   mainMenuBar->add("Machine/Speed/No limit",
@@ -3044,6 +3110,7 @@ void Ep128EmuGUI::run()
   }
   closeDemoFile(false);
   Fl::remove_timeout(&archiveAutoRunCallback, (void *) this);
+  Fl::remove_timeout(&screenshotNoticeTimeout, (void *) this);
   try {
     restoreArchiveAutoRunSpeed();
   }
@@ -5741,6 +5808,56 @@ void Ep128EmuGUI::fltkCheckCallback(void *userData)
   }
 }
 
+// Keep automatic F12 captures independent of the legacy Save As folder.
+// Empty gui.autoScreenshotDirectory means the well-known Pictures/home
+// fallback, never the FileIO working directory or an obsolete chosen path.
+static std::string ep128emuDefaultScreenshotFolder()
+{
+#ifdef WIN32
+  const wchar_t *home = _wgetenv(L"USERPROFILE");
+  if (!home || !*home) return std::string();
+  std::wstring pictures(home);
+  pictures += L"\\Pictures";
+  const DWORD attrs = GetFileAttributesW(pictures.c_str());
+  return ep128emuFFUTF8(attrs != INVALID_FILE_ATTRIBUTES &&
+                        (attrs & FILE_ATTRIBUTE_DIRECTORY)
+                        ? pictures : std::wstring(home));
+#else
+  const char *home = std::getenv("HOME");
+  if (!home || !*home) return std::string();
+  const std::string pictures = std::string(home) + "/Pictures";
+  struct stat st;
+  return (::stat(pictures.c_str(), &st) == 0 && S_ISDIR(st.st_mode)
+          ? pictures : std::string(home));
+#endif
+}
+
+void Ep128EmuGUI::screenshotNoticeTimeout(void *userData)
+{
+  Ep128EmuGUI& gui_ = *(reinterpret_cast<Ep128EmuGUI *>(userData));
+  gui_.updateDisplay_windowTitle();
+}
+
+void Ep128EmuGUI::screenshotSavedNotice(const std::string& path)
+{
+  // The PNG must already have been written. Never acknowledge a request,
+  // failed open or cancelled chooser as successful output.
+  const std::string::size_type pos = path.find_last_of("/\\");
+  const std::string fileName = (pos == std::string::npos
+                                ? path : path.substr(pos + 1));
+  const std::string label = "Screenshot saved: " + fileName;
+  Fl::remove_timeout(&screenshotNoticeTimeout, (void *) this);
+  mainWindow->copy_label(label.c_str());
+  Fl::add_timeout(2.0, &screenshotNoticeTimeout, (void *) this);
+  if (screenshotSoundEnabled) {
+#ifdef __APPLE__
+    (void) ep128emuPlayMacOSScreenshotChime();
+#elif defined(WIN32)
+    (void) ep128emuPlayWindowsScreenshotChime();
+#endif
+  }
+}
+
 void Ep128EmuGUI::screenshotCallback(void *userData,
                                      const unsigned char *buf, int w_, int h_)
 {
@@ -5790,30 +5907,12 @@ void Ep128EmuGUI::saveScreenshot(const unsigned char *buf, int w_, int h_,
       if (!std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", parts))
         throw Ep128Emu::Exception("Cannot format screenshot timestamp");
       const char *machine = ep128emuMachineShortName(vm);
-      // Automatic F12 captures ALWAYS go into the host Pictures directory.
-      // gui.screenshotDirectory is the persisted last Save As chooser location,
-      // and may still point to an old FileIO/working directory. Never use that
-      // legacy value to decide the destination of an automatic capture.
-      std::string dir;
-#ifdef WIN32
-      const wchar_t *home = _wgetenv(L"USERPROFILE");
-      if (home && *home) {
-        std::wstring pictures(home);
-        pictures += L"\\Pictures";
-        const DWORD attrs = GetFileAttributesW(pictures.c_str());
-        dir = ep128emuFFUTF8(attrs != INVALID_FILE_ATTRIBUTES &&
-                            (attrs & FILE_ATTRIBUTE_DIRECTORY)
-                            ? pictures : std::wstring(home));
-      }
-#else
-      const char *home = std::getenv("HOME");
-      if (home && *home) {
-        std::string pictures = std::string(home) + "/Pictures";
-        struct stat st;
-        dir = (::stat(pictures.c_str(), &st) == 0 && S_ISDIR(st.st_mode)
-               ? pictures : std::string(home));
-      }
-#endif
+      // User-selected auto folder is independent of Save As and FileIO.
+      // Do not silently redirect a missing custom folder to Pictures:
+      // writePNGImage must surface errors for that requested destination.
+      std::string dir = (autoScreenshotDirectory.empty()
+                         ? ep128emuDefaultScreenshotFolder()
+                         : autoScreenshotDirectory);
       if (dir.empty())
         throw Ep128Emu::Exception("Cannot resolve user Pictures directory");
       if (dir[dir.size() - 1] != '/' && dir[dir.size() - 1] != '\\')
@@ -5828,6 +5927,7 @@ void Ep128EmuGUI::saveScreenshot(const unsigned char *buf, int w_, int h_,
         try {
           Ep128Emu::writePNGImage(fName.c_str(), buf, w_, h_, 256,
                                   true, 32768, true);
+          screenshotSavedNotice(fName);
           return;
         }
         catch (const std::exception&) {
@@ -5853,6 +5953,7 @@ void Ep128EmuGUI::saveScreenshot(const unsigned char *buf, int w_, int h_,
     mainWindow->label(&(windowTitleBuf[0]));
     mainWindow->cursor(
         !(displayMode & 1) ? FL_CURSOR_DEFAULT : FL_CURSOR_NONE);
+    screenshotSavedNotice(fName);
   }
   catch (std::exception& e) {
     errorMessage(e.what());
@@ -6596,6 +6697,45 @@ void Ep128EmuGUI::menuCallback_File_ScreenshotAs(Fl_Widget *o, void *v)
   gui_.flDisplay->setScreenshotCallback(&screenshotAsCallback, v);
 }
 
+void Ep128EmuGUI::menuCallback_File_ScreenshotSound(Fl_Widget *o, void *v)
+{
+  (void) o;
+  Ep128EmuGUI& gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
+  const Fl_Menu_Item *item =
+      gui_.mainMenuBar->find_item("File/Screenshot confirmation sound");
+  gui_.screenshotSoundEnabled = (item && item->value() != 0);
+}
+
+void Ep128EmuGUI::menuCallback_File_AutoScreenshotFolder(Fl_Widget *o, void *v)
+{
+  (void) o;
+  Ep128EmuGUI& gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
+  std::string selected;
+  std::string directory = (gui_.autoScreenshotDirectory.empty()
+                           ? ep128emuDefaultScreenshotFolder()
+                           : gui_.autoScreenshotDirectory);
+  if (gui_.browseFile(selected, directory, "*",
+                      Fl_Native_File_Chooser::BROWSE_DIRECTORY,
+                      "Select folder for automatic screenshots")) {
+    // The chooser's directory field is not the selected target: use
+    // its actual filename, otherwise F12 could save to the parent.
+    gui_.autoScreenshotDirectory = selected;
+    Fl::remove_timeout(&screenshotNoticeTimeout, (void *) &gui_);
+    gui_.mainWindow->copy_label("Automatic screenshot folder selected");
+    Fl::add_timeout(2.0, &screenshotNoticeTimeout, (void *) &gui_);
+  }
+}
+
+void Ep128EmuGUI::menuCallback_File_AutoScreenshotDefault(Fl_Widget *o, void *v)
+{
+  (void) o;
+  Ep128EmuGUI& gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
+  gui_.autoScreenshotDirectory.clear();
+  Fl::remove_timeout(&screenshotNoticeTimeout, (void *) &gui_);
+  gui_.mainWindow->copy_label("Automatic screenshots: Pictures folder");
+  Fl::add_timeout(2.0, &screenshotNoticeTimeout, (void *) &gui_);
+}
+
 // Called on each graceful shutdown or host machine switch BEFORE asking the
 // worker to quit. Only a writable native SDD requires additional I/O.
 // The check holds the existing VMThread lock so no guest write can race it.
@@ -6790,7 +6930,24 @@ void Ep128EmuGUI::menuCallback_Machine_Pause(Fl_Widget *o, void *v)
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
   try {
     Ep128Emu::VMThread::VMThreadStatus vmThreadStatus(gui_.vmThread);
-    gui_.vmThread.pause(!vmThreadStatus.isPaused);
+    const bool pauseRequested = !vmThreadStatus.isPaused;
+    gui_.vmThread.pause(pauseRequested);
+    if (pauseRequested) {
+      // VMThread::pause sets the flag immediately, but the old UI returned
+      // before the worker had finished its in-flight 2 ms quantum. In
+      // addition, completed frames can remain queued for FLTK/GL, while the
+      // GL resampling ring continues to interpolate them for a few refreshes.
+      // Fence execution, consume already-completed video before showing
+      // PAUSED, then stop ring interpolation without touching guest VRAM.
+      const int lockResult = gui_.vmThread.lock(100);
+      if (lockResult == 0) {
+        for (int n = 0; n < 64 && gui_.flDisplay->haveFramesPending(); n++)
+          gui_.flDisplay->checkEvents();
+        gui_.vmThread.unlock();
+      }
+    }
+    gui_.flDisplay->setPresentationPaused(pauseRequested);
+    gui_.emulatorWindow->redraw();
   }
   catch (std::exception& e) {
     gui_.errorMessage(e.what());
