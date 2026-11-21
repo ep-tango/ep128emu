@@ -8,9 +8,12 @@ decl {\#include "gui.hpp"} {selected
 
 decl {\#include "ep128vm.hpp"} {} 
 
-decl {\#include "tvc64vm.hpp"} {} 
+decl {\#include "tvc64vm.hpp"} {}
+decl {\#include "zx128vm.hpp"} {}
 
-decl {\#include <typeinfo>} {} 
+decl {\#include <typeinfo>} {}
+decl {\#include "c09_disk_media.hpp"} {}
+decl {\#include <cstdio>} {}
 
 class Ep128EmuGUI_DiskConfigWindow {open
 } {
@@ -29,17 +32,17 @@ class Ep128EmuGUI_DiskConfigWindow {open
   updateWindow();
   window->hide();
 }} open
-      xywh {88 224 540 450} type Double color 48 visible
+      xywh {88 224 700 450} type Double color 48 visible
     } {
       Fl_Tabs diskConfigTabs {open
-        xywh {10 10 520 395}
+        xywh {10 10 680 395}
       } {
         Fl_Group {} {
           label Floppy open
-          xywh {10 35 520 370} box THIN_UP_BOX
+          xywh {10 35 680 370} box THIN_UP_BOX
         } {
           Fl_Group {} {open
-            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 45 500 80} box THIN_UP_BOX
+            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 45 660 80} box THIN_UP_BOX
           } {
             Fl_Button floppyADeviceButton {
               label {A:}
@@ -51,6 +54,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.config["floppy.a.imageFile"] = "/dev/fd0";
 \#endif
     floppyAImageFileValuator->value(gui.config.floppy.a.imageFile.c_str());
+    updateMediaInfo();
   }
   catch (std::exception& e) {
     gui.errorMessage(e.what());
@@ -62,6 +66,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
               callback {{
   try {
     gui.config["floppy.a.imageFile"] = o->value();
+    updateMediaInfo();
   }
   catch (std::exception& e) {
     gui.errorMessage(e.what());
@@ -70,7 +75,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
               tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 55 310 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
-            Fl_Button {} {
+            Fl_Button floppyAInsertButton {
               label {@fileopen}
               callback {{
   try {
@@ -82,6 +87,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
       gui.config["floppy.a.imageFile"] = tmp;
       gui.rememberDiskImage(tmp);
       floppyAImageFileValuator->value(tmp.c_str());
+      updateMediaInfo();
     }
   }
   catch (std::exception& e) {
@@ -93,6 +99,21 @@ class Ep128EmuGUI_DiskConfigWindow {open
             Fl_Box {} {
               label {Image file}
               xywh {410 55 90 25} align 20
+            }
+            Fl_Button floppyAEjectButton {
+              label Eject
+              callback {{
+  gui.menuCallback_Options_FloppyRmA((Fl_Widget*)0,&gui);
+  updateWindow();
+}}
+              tooltip {Eject the disk using the existing Disk > Remove drive command.} xywh {535 55 63 25} color 50
+            }
+            Fl_Button floppyAProtectButton {
+              label Protect
+              tooltip {The legacy EP/TVC/CPC floppy controller does not expose a safe live write-protect toggle through the existing GUI API. This button is intentionally unavailable; read-only media remain protected.} xywh {605 55 75 25} deactivate
+            }
+            Fl_Box floppyAMediaInfo {
+              tooltip {Recognized ZX floppy image type. Geometry is displayed in the existing fields.} xywh {505 92 175 23} labelsize 11 align 16
             }
             Fl_Value_Input floppyATracksValuator {
               label Tracks
@@ -138,7 +159,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
             } {}
           }
           Fl_Group {} {open
-            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 135 500 80} box THIN_UP_BOX
+            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 135 660 80} box THIN_UP_BOX
           } {
             Fl_Button floppyBDeviceButton {
               label {B:}
@@ -150,6 +171,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     gui.config["floppy.b.imageFile"] = "/dev/fd1";
 \#endif
     floppyBImageFileValuator->value(gui.config.floppy.b.imageFile.c_str());
+    updateMediaInfo();
   }
   catch (std::exception& e) {
     gui.errorMessage(e.what());
@@ -161,6 +183,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
               callback {{
   try {
     gui.config["floppy.b.imageFile"] = o->value();
+    updateMediaInfo();
   }
   catch (std::exception& e) {
     gui.errorMessage(e.what());
@@ -169,7 +192,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
               tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 145 310 25}
               code0 {o->cursor_color(Fl_Color(3));}
             }
-            Fl_Button {} {
+            Fl_Button floppyBInsertButton {
               label {@fileopen}
               callback {{
   try {
@@ -180,6 +203,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
                        "Select disk image file")) {
       gui.config["floppy.b.imageFile"] = tmp;
       floppyBImageFileValuator->value(tmp.c_str());
+      updateMediaInfo();
     }
   }
   catch (std::exception& e) {
@@ -191,6 +215,21 @@ class Ep128EmuGUI_DiskConfigWindow {open
             Fl_Box {} {
               label {Image file}
               xywh {410 145 90 25} align 20
+            }
+            Fl_Button floppyBEjectButton {
+              label Eject
+              callback {{
+  gui.menuCallback_Options_FloppyRmB((Fl_Widget*)0,&gui);
+  updateWindow();
+}}
+              tooltip {Eject the disk using the existing Disk > Remove drive command.} xywh {535 145 63 25} color 50
+            }
+            Fl_Button floppyBProtectButton {
+              label Protect
+              tooltip {The legacy EP/TVC/CPC floppy controller does not expose a safe live write-protect toggle through the existing GUI API. This button is intentionally unavailable; read-only media remain protected.} xywh {605 145 75 25} deactivate
+            }
+            Fl_Box floppyBMediaInfo {
+              tooltip {Recognized ZX floppy image type. Geometry is displayed in the existing fields.} xywh {505 182 175 23} labelsize 11 align 16
             }
             Fl_Value_Input floppyBTracksValuator {
               label Tracks
@@ -236,13 +275,14 @@ class Ep128EmuGUI_DiskConfigWindow {open
             } {}
           }
           Fl_Group {} {open
-            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 225 500 80} box THIN_UP_BOX
+            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 225 660 80} box THIN_UP_BOX
           } {
             Fl_Input floppyCImageFileValuator {
               label {C: }
               callback {{
   try {
     gui.config["floppy.c.imageFile"] = o->value();
+    updateMediaInfo();
   }
   catch (std::exception& e) {
     gui.errorMessage(e.what());
@@ -251,7 +291,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
               tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 235 310 25} labelfont 1
               code0 {o->cursor_color(Fl_Color(3));}
             }
-            Fl_Button {} {
+            Fl_Button floppyCInsertButton {
               label {@fileopen}
               callback {{
   try {
@@ -262,6 +302,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
                        "Select disk image file")) {
       gui.config["floppy.c.imageFile"] = tmp;
       floppyCImageFileValuator->value(tmp.c_str());
+      updateMediaInfo();
     }
   }
   catch (std::exception& e) {
@@ -273,6 +314,21 @@ class Ep128EmuGUI_DiskConfigWindow {open
             Fl_Box {} {
               label {Image file}
               xywh {410 235 90 25} align 20
+            }
+            Fl_Button floppyCEjectButton {
+              label Eject
+              callback {{
+  gui.menuCallback_Options_FloppyRmC((Fl_Widget*)0,&gui);
+  updateWindow();
+}}
+              tooltip {Eject the disk using the existing Disk > Remove drive command.} xywh {535 235 63 25} color 50
+            }
+            Fl_Button floppyCProtectButton {
+              label Protect
+              tooltip {The legacy EP/TVC/CPC floppy controller does not expose a safe live write-protect toggle through the existing GUI API. This button is intentionally unavailable; read-only media remain protected.} xywh {605 235 75 25} deactivate
+            }
+            Fl_Box floppyCMediaInfo {
+              tooltip {Recognized ZX floppy image type. Geometry is displayed in the existing fields.} xywh {505 272 175 23} labelsize 11 align 16
             }
             Fl_Value_Input floppyCTracksValuator {
               label Tracks
@@ -318,13 +374,14 @@ class Ep128EmuGUI_DiskConfigWindow {open
             } {}
           }
           Fl_Group {} {open
-            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 315 500 80} box THIN_UP_BOX
+            tooltip {Geometry -1 means automatic only when a valid FAT header supplies it, when one missing field can be derived, or when a conventional 80 tracks x 2 sides x 9 sectors image exactly matches the selected sector size. Otherwise specify geometry.} xywh {20 315 660 80} box THIN_UP_BOX
           } {
             Fl_Input floppyDImageFileValuator {
               label {D: }
               callback {{
   try {
     gui.config["floppy.d.imageFile"] = o->value();
+    updateMediaInfo();
   }
   catch (std::exception& e) {
     gui.errorMessage(e.what());
@@ -333,7 +390,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
               tooltip {File names like /dev/fd0u720 (Linux) or \\\\.\\A: (Windows) can be used for direct access to actual floppy disks; leave the file name blank to have no disk emulated in this drive} xywh {55 325 310 25} labelfont 1
               code0 {o->cursor_color(Fl_Color(3));}
             }
-            Fl_Button {} {
+            Fl_Button floppyDInsertButton {
               label {@fileopen}
               callback {{
   try {
@@ -344,6 +401,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
                        "Select disk image file")) {
       gui.config["floppy.d.imageFile"] = tmp;
       floppyDImageFileValuator->value(tmp.c_str());
+      updateMediaInfo();
     }
   }
   catch (std::exception& e) {
@@ -355,6 +413,21 @@ class Ep128EmuGUI_DiskConfigWindow {open
             Fl_Box {} {
               label {Image file}
               xywh {410 325 90 25} align 20
+            }
+            Fl_Button floppyDEjectButton {
+              label Eject
+              callback {{
+  gui.menuCallback_Options_FloppyRmD((Fl_Widget*)0,&gui);
+  updateWindow();
+}}
+              tooltip {Eject the disk using the existing Disk > Remove drive command.} xywh {535 325 63 25} color 50
+            }
+            Fl_Button floppyDProtectButton {
+              label Protect
+              tooltip {The legacy EP/TVC/CPC floppy controller does not expose a safe live write-protect toggle through the existing GUI API. This button is intentionally unavailable; read-only media remain protected.} xywh {605 325 75 25} deactivate
+            }
+            Fl_Box floppyDMediaInfo {
+              tooltip {Recognized ZX floppy image type. Geometry is displayed in the existing fields.} xywh {505 362 175 23} labelsize 11 align 16
             }
             Fl_Value_Input floppyDTracksValuator {
               label Tracks
@@ -592,7 +665,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
           }
         }
       }
-      Fl_Button {} {
+      Fl_Button floppyClearAllButton {
         label {Clear all}
         callback {{
   try {
@@ -642,7 +715,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
 }}
         xywh {15 415 80 25} selection_color 50
       }
-      Fl_Button {} {
+      Fl_Button floppyApplyButton {
         label Apply
         callback {{
   try {
@@ -653,9 +726,9 @@ class Ep128EmuGUI_DiskConfigWindow {open
   }
   updateWindow();
 }}
-        xywh {395 415 60 25} selection_color 50
+        xywh {555 415 60 25} selection_color 50
       }
-      Fl_Button {} {
+      Fl_Button floppyOKButton {
         label OK
         callback {{
   try {
@@ -667,7 +740,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
   updateWindow();
   window->hide();
 }}
-        xywh {465 415 60 25} selection_color 50
+        xywh {625 415 60 25} selection_color 50
       }
     }
   }
@@ -698,13 +771,94 @@ class Ep128EmuGUI_DiskConfigWindow {open
   window->hide();
 }} {}
   }
+  Function {updateMediaInfo()} {open return_type void
+  } {
+    code {{
+  Fl_Box *infos[4]={floppyAMediaInfo,floppyBMediaInfo,
+                    floppyCMediaInfo,floppyDMediaInfo};
+  Fl_Value_Input *tracks[4]={floppyATracksValuator,floppyBTracksValuator,
+                             floppyCTracksValuator,floppyDTracksValuator};
+  Fl_Value_Input *sides[4]={floppyASidesValuator,floppyBSidesValuator,
+                            floppyCSidesValuator,floppyDSidesValuator};
+  Fl_Value_Input *sectors[4]={floppyASectorsPerTrackValuator,
+                              floppyBSectorsPerTrackValuator,
+                              floppyCSectorsPerTrackValuator,
+                              floppyDSectorsPerTrackValuator};
+  Fl_Choice *bytes[4]={floppyABytesPerSectorValuator,floppyBBytesPerSectorValuator,
+                       floppyCBytesPerSectorValuator,floppyDBytesPerSectorValuator};
+  const std::string *paths[4]={
+    &gui.config.floppy.a.imageFile,&gui.config.floppy.b.imageFile,
+    &gui.config.floppy.c.imageFile,&gui.config.floppy.d.imageFile
+  };
+  const int originalTracks[4]={gui.config.floppy.a.tracks,gui.config.floppy.b.tracks,
+                               gui.config.floppy.c.tracks,gui.config.floppy.d.tracks};
+  const int originalSides[4]={gui.config.floppy.a.sides,gui.config.floppy.b.sides,
+                              gui.config.floppy.c.sides,gui.config.floppy.d.sides};
+  const int originalSectors[4]={gui.config.floppy.a.sectorsPerTrack,
+                                gui.config.floppy.b.sectorsPerTrack,
+                                gui.config.floppy.c.sectorsPerTrack,
+                                gui.config.floppy.d.sectorsPerTrack};
+  const int originalBytes[4]={gui.config.floppy.a.bytesPerSector,
+                              gui.config.floppy.b.bytesPerSector,
+                              gui.config.floppy.c.bytesPerSector,
+                              gui.config.floppy.d.bytesPerSector};
+  // Original Enterprise/TVC geometry fields remain the sole geometry display.
+  // Never write recognized ZX CHS into the persisted EXDOS configuration.
+  const bool legacyGeometry=(typeid(gui.vm)==typeid(Ep128::Ep128VM) ||
+                             typeid(gui.vm)==typeid(TVC64::TVC64VM));
+  for(int n=0;n<4;++n) {
+    const Ep128Emu::C09DiskMedia media=
+        Ep128Emu::inspectC09DiskMedia(*paths[n]);
+    infos[n]->copy_label(media.type==Ep128Emu::C09DiskMedia::SpeccySDD?
+                          "SpeccyDOS SDD":
+                          media.type==Ep128Emu::C09DiskMedia::BetaTRD?
+                          "TR-DOS TRD":
+                          media.type==Ep128Emu::C09DiskMedia::Invalid?
+                          "Invalid SDD/TRD":"");
+    if(!legacyGeometry)continue;
+    const bool recognized=media.identified();
+    tracks[n]->value(double(recognized?media.tracks:originalTracks[n]));
+    sides[n]->value(double(recognized?media.sides:originalSides[n]));
+    sectors[n]->value(double(recognized?media.sectors:originalSectors[n]));
+    const int sectorSize=recognized?media.bytesPerSector:originalBytes[n];
+    bytes[n]->value(sectorSize==128?0:sectorSize==256?1:
+                    sectorSize==1024?3:2);
+    // Foreign 256-byte-sector geometry is informational; legacy IMG editing
+    // remains available as soon as the SDD/TRD media is replaced or ejected.
+    if(recognized) {
+      tracks[n]->deactivate();sides[n]->deactivate();
+      sectors[n]->deactivate();bytes[n]->deactivate();
+    }
+    else {
+      tracks[n]->activate();sides[n]->activate();
+      sectors[n]->activate();bytes[n]->activate();
+    }
+  }
+}} {}
+  }
   Function {updateWindow()} {open return_type void
   } {
     code {{
+  // Keep the guest-owned ZX drive rows intact during concurrent Options
+  // menu updates. The Spectrum panel is deliberately NOT modal.
+  if (typeid(gui.vm) == typeid(ZX128::ZX128VM) && window->shown())
+    return;
   floppyAImageFileValuator->value(gui.config.floppy.a.imageFile.c_str());
   floppyBImageFileValuator->value(gui.config.floppy.b.imageFile.c_str());
   floppyCImageFileValuator->value(gui.config.floppy.c.imageFile.c_str());
   floppyDImageFileValuator->value(gui.config.floppy.d.imageFile.c_str());
+  const std::string *legacyPaths[4] = {
+    &gui.config.floppy.a.imageFile, &gui.config.floppy.b.imageFile,
+    &gui.config.floppy.c.imageFile, &gui.config.floppy.d.imageFile
+  };
+  Fl_Button *legacyEject[4] = {
+    floppyAEjectButton, floppyBEjectButton,
+    floppyCEjectButton, floppyDEjectButton
+  };
+  for (int n=0;n<4;++n) {
+    if (legacyPaths[n]->empty()) legacyEject[n]->deactivate();
+    else legacyEject[n]->activate();
+  }
   if (typeid(gui.vm) != typeid(Ep128::Ep128VM) &&
       typeid(gui.vm) != typeid(TVC64::TVC64VM)) {
     ideConfigGroup->deactivate();
@@ -728,6 +882,26 @@ class Ep128EmuGUI_DiskConfigWindow {open
     floppyDBytesPerSectorValuator->deactivate();
   }
   else {
+    if (ideConfigGroup->parent() != diskConfigTabs)
+      diskConfigTabs->add(*ideConfigGroup);
+    ideConfigGroup->show();
+    ideConfigGroup->activate();
+    floppyATracksValuator->activate();
+    floppyASidesValuator->activate();
+    floppyASectorsPerTrackValuator->activate();
+    floppyABytesPerSectorValuator->activate();
+    floppyBTracksValuator->activate();
+    floppyBSidesValuator->activate();
+    floppyBSectorsPerTrackValuator->activate();
+    floppyBBytesPerSectorValuator->activate();
+    floppyCTracksValuator->activate();
+    floppyCSidesValuator->activate();
+    floppyCSectorsPerTrackValuator->activate();
+    floppyCBytesPerSectorValuator->activate();
+    floppyDTracksValuator->activate();
+    floppyDSidesValuator->activate();
+    floppyDSectorsPerTrackValuator->activate();
+    floppyDBytesPerSectorValuator->activate();
     floppyATracksValuator->value(double(gui.config.floppy.a.tracks));
     floppyASidesValuator->value(double(gui.config.floppy.a.sides));
     floppyASectorsPerTrackValuator->value(double(gui.config.floppy.a.sectorsPerTrack));
@@ -770,6 +944,7 @@ class Ep128EmuGUI_DiskConfigWindow {open
     }
     sdExtImageFileValuator->value(gui.config.sdext.imageFile.c_str());
   }
+  updateMediaInfo();
 }} {}
   }
 } 

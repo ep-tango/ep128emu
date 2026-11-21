@@ -124,7 +124,7 @@ static const char *menuPaths[EP_SC_COUNT] = {
   "Machine/Speed/100%",
   "Machine/Speed/No limit",
   "Machine/Tape/Force motor on",
-  "Machine/Beta Disk (experimental)/Enter TR-DOS"
+  "Machine/Beta Disk/Enter TR-DOS"
 };
 
 static std::string trim(const std::string& s)

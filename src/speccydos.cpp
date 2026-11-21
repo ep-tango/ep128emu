@@ -11,7 +11,7 @@ namespace ZX128 {
       romSelected(false),
       singleDensity(false), controlRegister(0),
       typeIBusyCyclesRemaining(0U), ulaClockHz(886724U),
-      controller(), drives()
+      controller(), drives(), ledActivityTicks()
   {
     firmware.fill(0xFFU);
     ram.fill(0U);
@@ -62,6 +62,7 @@ namespace ZX128 {
     singleDensity = false;
     controlRegister = 0U;
     typeIBusyCyclesRemaining = 0U;
+    ledActivityTicks.fill(0U);
     controller.reset(cold);
     controller.setFloppyDrive(&drives[0]);
     // RAM persists over warm reset, like the physical expansion SRAM.
@@ -137,6 +138,10 @@ namespace ZX128 {
     else if (addr >= 0x3290U && addr <= 0x3293U) {
       switch (addr & 3U) {
        case 0:
+         // LED activity belongs to a real WD command, not a persistent
+         // SpeccyDOS 3B41h drive/motor selection. A probe of an empty
+         // drive is still an FDC attempt and may briefly light its LED.
+         ledActivityTicks[controlRegister & 3U] = 81U;
          controller.writeCommandRegister(value);
          if ((value & 0x80U) == 0U) {
            // WD1770 rates: 6/12/20/30 ms; WD1772 rates: 6/12/2/3 ms

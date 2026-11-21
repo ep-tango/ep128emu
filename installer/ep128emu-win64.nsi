@@ -1,8 +1,8 @@
-; Current ep128emu 2.2.1 canonical installer payload, source-maintained.
+; Current ep128emu 2.2.2 canonical installer payload, source-maintained.
 ; Requires explicit stage and output definitions (see ep128emu.nsi).
 Unicode True
 Target amd64-unicode
-Name "EP128emu 2.2.1 x64"
+Name "EP128emu 2.2.2 x64"
 OutFile "${EP128EMU_OUTFILE}"
 InstallDir "$PROGRAMFILES64\ep128emu-custom-x64"
 RequestExecutionLevel admin
@@ -239,7 +239,7 @@ Section "EP128emu, ROMs and tools" SecMain
   CreateShortcut "$SMPROGRAMS\EP128emu x64\Tape editor.lnk" "$INSTDIR\tapeedit.exe"
   CreateShortcut "$SMPROGRAMS\EP128emu x64\Configuration utility.lnk" "$INSTDIR\makecfg.exe"
   CreateShortcut "$SMPROGRAMS\EP128emu x64\Uninstall.lnk" "$INSTDIR\uninstall.exe"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ep128emu-custom-x64" "DisplayName" "EP128emu 2.2.1 x64"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ep128emu-custom-x64" "DisplayName" "EP128emu 2.2.2 x64"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ep128emu-custom-x64" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ep128emu-custom-x64" "InstallLocation" "$INSTDIR"
 SectionEnd

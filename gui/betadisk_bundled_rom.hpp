@@ -2,10 +2,15 @@
 // Resolve relative to the running .app, never CWD or the last browsed ROM.
 #ifndef EP128EMU_GUI_BETADISK_BUNDLED_ROM_HPP
 #define EP128EMU_GUI_BETADISK_BUNDLED_ROM_HPP
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
 #include "betadisk_trial_media.hpp"
+#ifdef __APPLE__
 #include <mach-o/dyld.h>
 #include <CommonCrypto/CommonDigest.h>
+#else
+#include "c15_linux_host.hpp"
+#include "c15_sha256.hpp"
+#endif
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -28,6 +33,15 @@ inline const char *bundledSHA256(int variant) {
   default: throw std::runtime_error("Beta Disk: unknown bundled ROM variant");
   }
 }
+#ifdef __linux__
+inline std::string bundledROMPathFromExecutable(const std::string& exe,int variant) {
+  return Ep128EmuLinuxHost::bundledROMPathFromExecutable(
+      exe,"BetaDisk",bundledFileName(variant));
+}
+inline std::string bundledROMPath(int variant) {
+  return bundledROMPathFromExecutable(Ep128EmuLinuxHost::executablePath(),variant);
+}
+#else
 inline std::string bundledROMPathFromExecutable(const std::string& exe,int variant) {
   const std::string marker("/Contents/MacOS/");
   size_t n=exe.rfind(marker);
@@ -45,6 +59,15 @@ inline std::string bundledROMPath(int variant) {
     throw std::runtime_error("Beta Disk: cannot locate running executable");
   return bundledROMPathFromExecutable(buf.data(),variant);
 }
+#endif
+#ifdef __linux__
+// Same SHA-256 allowlist as Apple CommonCrypto and Windows CryptoAPI.
+inline std::string digestROM(const std::vector<uint8_t>& rom) {
+  if(rom.size()!=16384U)
+    throw std::runtime_error("Beta Disk: ROM size invalid");
+  return Ep128EmuC15SHA256::hex(rom);
+}
+#else
 inline std::string digestROM(const std::vector<uint8_t>& rom) {
   if (rom.size()!=16384U) throw std::runtime_error("Beta Disk: ROM size invalid");
   unsigned char hash[CC_SHA256_DIGEST_LENGTH];
@@ -54,6 +77,7 @@ inline std::string digestROM(const std::vector<uint8_t>& rom) {
     std::snprintf(hex+2*i,sizeof(hex)-2*i,"%02x",unsigned(hash[i]));
   return std::string(hex,2*CC_SHA256_DIGEST_LENGTH);
 }
+#endif
 inline std::vector<uint8_t> readBundledROMFromExecutable(const std::string& exe,int variant) {
   // Derive the path first; verify exact original content before VM install.
   std::vector<uint8_t> rom=readROM(bundledROMPathFromExecutable(exe,variant));
@@ -127,8 +151,8 @@ inline std::vector<uint8_t> readBundledROM(int v) {
   return rom;
 }
 } // namespace Ep128EmuBetaTrial
-#endif // __APPLE__ || WIN32
-#if defined(__APPLE__) || defined(WIN32)
+#endif // __APPLE__ || WIN32 || __linux__
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
 namespace Ep128EmuBetaTrial {
 // Only guest-verified firmware can mount a persistent writable TRD clone.
 // Arbitrary external ROMs and the known-bad 5.04 dump remain read-only.

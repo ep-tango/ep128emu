@@ -249,6 +249,8 @@ namespace ZX128 {
      * individual status values).
      */
     virtual void getVMStatus(VirtualMachine::VMStatus& vmStatus_);
+    // C10: Spectrum expansion floppy LEDs share the existing A-D GUI display.
+    virtual uint32_t getFloppyDriveLEDState();
     /*!
      * Create video capture object with the specified frame rate (24 to 60)
      * and format (768x576 RLE8 or 384x288 YV12) if it does not exist yet,

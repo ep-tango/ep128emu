@@ -113,6 +113,10 @@ namespace Ep128Emu {
       //   0x04000000: IDE drive 3 red LED is on (low priority)
       //   0x0C000000: IDE drive 3 red LED is on (high priority)
       uint32_t  floppyDriveLEDState;
+      // C12: guest-selected floppy drive (Spectrum: 0..3; 0xFF=none).
+      // Read by GUI from the VM thread's published snapshot: never lock
+      // the emulation thread for a modeless status-line repaint.
+      uint8_t   selectedFloppyDrive = 0xFFU;
       // independent Enterprise DAVE remote relay outputs (bit 0/1)
       uint8_t   tapeRemoteState;
       // Number of Enterprise mechanical relay engagements observed this VM

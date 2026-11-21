@@ -10,15 +10,15 @@
 #endif
 namespace ZX128 {
   BetaDiskBus::BetaDiskBus(const std::vector<uint8_t>& romImage)
-    : rom(romImage), drive(), fdc(), active(false), systemControl(0x04),
+    : rom(romImage), drives(), fdc(), active(false), systemControl(0x04),
       indexPhase(0), indexPeriod(177344), indexPulseWidth(3547),
-      typeIStatusSelected(true), writableCopyActive(false),
-      writeTrackNoDataCycles(0)
+      typeIStatusSelected(true), writableCopyActive(),
+      ledActivityTicks(), writeTrackNoDataCycles(0)
   {
     if (rom.size() != 16384U)
       throw Ep128Emu::Exception("Beta Disk: ROM must be 16384 bytes");
     fdc.setIsWD1773(true);
-    fdc.setFloppyDrive(&drive);
+    fdc.setFloppyDrive(&drives[0]);
     reset(true);
   }
   void BetaDiskBus::reset(bool cold)
@@ -30,9 +30,10 @@ namespace ZX128 {
     indexPhase = 0U;
     typeIStatusSelected = true;
     writeTrackNoDataCycles = 0;
+    ledActivityTicks.fill(0U);
     fdc.reset(cold);
-    drive.motorOff();
-    drive.setSide(0);
+    for (unsigned n=0; n<4; ++n) { drives[n].motorOff(); drives[n].setSide(0); }
+    fdc.setFloppyDrive(&drives[0]);
   }
   void BetaDiskBus::setULACycleFrequency(uint32_t hz)
   {
@@ -77,6 +78,7 @@ namespace ZX128 {
   }
   uint8_t BetaDiskBus::readPort(uint16_t port, bool debug)
   {
+    Ep128Emu::FloppyDrive& drive = drives[getSelectedDriveNumber()];
     switch (port & 0xFFU) {
     case 0x1F: {
       uint8_t v = (debug ? fdc.readStatusRegisterDebug() : fdc.readStatusRegister());
@@ -100,8 +102,12 @@ namespace ZX128 {
   }
   void BetaDiskBus::writePort(uint16_t port, uint8_t value)
   {
+    Ep128Emu::FloppyDrive& drive = drives[getSelectedDriveNumber()];
     switch (port & 0xFFU) {
     case 0x1F:
+      // Count only guest WD1793 commands. FFh can keep the physical motor
+      // enabled indefinitely, which must not pin the UI activity LED on.
+      ledActivityTicks[getSelectedDriveNumber()] = 81U;
       // A busy WD1793 ignores unrelated commands; they must not disable
       // the active no-data WRITE TRACK guard. FORCE INTERRUPT cancels it.
       if ((fdc.readStatusRegisterDebug() & 0x01U) == 0U ||
@@ -109,7 +115,7 @@ namespace ZX128 {
         writeTrackNoDataCycles = 0U;
       // Only explicit, verified *private* writable-copy mounts may write.
       // The original/read-only path retains the historical force-interrupt.
-      if (!writableCopyActive &&
+      if (!writableCopyActive[getSelectedDriveNumber()] &&
           ((value & 0xE0U) == 0xA0U || (value & 0xF0U) == 0xF0U)) {
         // The staged disk is immutable: do not execute a write/format.
         // However the original TR-DOS does issue WRITE TRACK while
@@ -121,7 +127,7 @@ namespace ZX128 {
         break;
       }
       fdc.writeCommandRegister(value);
-      if (writableCopyActive && (value & 0xF0U) == 0xF0U &&
+      if (writableCopyActive[getSelectedDriveNumber()] && (value & 0xF0U) == 0xF0U &&
           fdc.getDataRequestFlag() &&
           (fdc.readStatusRegisterDebug() & 0x01U) != 0U)
         writeTrackNoDataCycles = 1U;
@@ -145,32 +151,45 @@ namespace ZX128 {
       writeTrackNoDataCycles = 0U;
       fdc.writeDataRegister(value);
       break;
-    case 0xFF:
+    case 0xFF: {
+      const unsigned previousDrive = getSelectedDriveNumber();
+      const unsigned nextDrive = unsigned(value & 3U);
       systemControl = value;
       if (!(value & 0x04U)) {
         writeTrackNoDataCycles = 0U;
         fdc.reset(true);
-        drive.motorOff();
+        for (unsigned n=0;n<4;++n) drives[n].motorOff();
       }
       else {
-        fdc.setFloppyDrive((value & 3U) ? (Ep128Emu::FloppyDrive *) 0 : &drive);
-        // The original Technology Research v5.03 selects the physical
-        // lower head with FF bit4=1 (verified against a real LIST).
-        // The host FloppyDrive side index is 0 for that lower head.
-        drive.setSide(((value >> 4) & 1U) ^ 1U);
-        drive.motorOn();
+        if (previousDrive != nextDrive) drives[previousDrive].motorOff();
+        // The physical FDC is shared; FF bits 0..1 address A..D.
+        // Never alias an absent drive to A or leave the FDC disconnected.
+        fdc.setFloppyDrive(&drives[nextDrive]);
+        // Technology Research 5.03: bit4=1 selects physical lower head.
+        drives[nextDrive].setSide(((value >> 4) & 1U) ^ 1U);
+        drives[nextDrive].motorOn();
       }
       break;
     }
+    }
+  }
+  bool BetaDiskBus::syncWritableCopy(unsigned int slot)
+  {
+    Ep128Emu::FloppyDrive& drive = driveAt(slot);
+    return !writableCopyActive[slot] || drive.syncWritableTRDCopy();
   }
   bool BetaDiskBus::syncWritableCopy()
   {
-    return !writableCopyActive || drive.syncWritableTRDCopy();
+    // Reset/disable can only discard the shared FDC state after all
+    // four independently writable media have completed durable I/O.
+    for (unsigned n=0;n<4;++n) if (!syncWritableCopy(n)) return false;
+    return true;
   }
 
-  void BetaDiskBus::ejectReadOnly()
+  void BetaDiskBus::ejectReadOnly(unsigned int slot)
   {
-    if (!syncWritableCopy())
+    Ep128Emu::FloppyDrive& drive = driveAt(slot);
+    if (!syncWritableCopy(slot))
       throw Ep128Emu::Exception("Beta Disk: writable TRD copy flush failed; eject cancelled");
     writeTrackNoDataCycles = 0U;
     if (!drive.haveDisk())
@@ -181,13 +200,15 @@ namespace ZX128 {
     // The WD1793 Force Interrupt with I3=1 completes the pending request;
     // the next DOS command can report its own media error (Retry/Abort).
     drive.setDiskImageFile("");
-    writableCopyActive = false;
-    fdc.writeCommandRegister(0xD8U);
-    typeIStatusSelected = true;
+    writableCopyActive[slot] = false;
+    if (slot == getSelectedDriveNumber()) {
+      fdc.writeCommandRegister(0xD8U);
+      typeIStatusSelected = true;
+    }
   }
-  void BetaDiskBus::mountReadOnly(const std::string& fileName,
-                                   int tracks, int sides)
+  void BetaDiskBus::mountReadOnly(unsigned int slot, const std::string& fileName, int tracks, int sides)
   {
+    Ep128Emu::FloppyDrive& drive = driveAt(slot);
     if (drive.haveDisk())
       throw Ep128Emu::Exception("Beta Disk: eject current media first");
     if (!((tracks == 40 || tracks == 80) && (sides == 1 || sides == 2)))
@@ -224,24 +245,24 @@ namespace ZX128 {
       drive.setDiskImageFile("");
       throw Ep128Emu::Exception("Beta Disk: writable media refused");
     }
-    writableCopyActive = false;
+    writableCopyActive[slot] = false;
   }
 
-  void BetaDiskBus::mountProtectedExisting(const std::string& fileName,
-                                            int tracks, int sides)
+  void BetaDiskBus::mountProtectedExisting(unsigned int slot, const std::string& fileName, int tracks, int sides)
   {
+    Ep128Emu::FloppyDrive& drive = driveAt(slot);
     if (drive.haveDisk())
       throw Ep128Emu::Exception("Beta Disk: eject current disk first");
     if (!((tracks==80 && sides==2) || (tracks==40 && sides==1)))
       throw Ep128Emu::Exception("Beta Disk: unsupported TRD geometry");
     drive.setDiskImageFile(fileName,tracks,sides,16,256);
     drive.setUserWriteProtected(true);
-    writableCopyActive=false;
+    writableCopyActive[slot]=false;
   }
 
-  void BetaDiskBus::mountWritableTRD(const std::string& fileName,
-                                      int tracks, int sides)
+  void BetaDiskBus::mountWritableTRD(unsigned int slot, const std::string& fileName, int tracks, int sides)
   {
+    Ep128Emu::FloppyDrive& drive = driveAt(slot);
     if (drive.haveDisk())
       throw Ep128Emu::Exception("Beta Disk: eject current media first");
     if (!((tracks==80 && sides==2) || (tracks==40 && sides==1)))
@@ -274,6 +295,6 @@ namespace ZX128 {
       drive.setDiskImageFile("");
       throw Ep128Emu::Exception("Beta Disk: writable TRD file refused");
     }
-    writableCopyActive=true;
+    writableCopyActive[slot]=true;
   }
 }

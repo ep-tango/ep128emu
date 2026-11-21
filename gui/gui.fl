@@ -74,6 +74,7 @@ class Ep128EmuGUI {open
   decl {int a02DebugLastStatus;} {}
   decl {bool a02DebugLastEnabled;} {}
   decl {bool a02DebugLastEngine;} {}
+  decl {bool diagnosticLoggingEnabled;} {}
   decl {bool showInformationalDialogs;} {}
   decl {bool betaDOSAutoEnterOnReset;} {}
   decl {int betaDOSAutoEnterPolls;} {}
@@ -137,6 +138,10 @@ class Ep128EmuGUI {open
   decl {bool speccyDOSWriteProtect;} {}
   decl {bool betaDiskWriteProtect;} {}
   decl {std::string betaDiskTemporaryDiskFile;} {}
+  decl {std::string c09SpeccyImagePath[4];} {}
+  decl {std::string c09BetaImagePath[4];} {}
+  decl {bool c09SpeccyWriteProtect[4];} {}
+  decl {bool c09BetaWriteProtect[4];} {}
   decl {int betaDOSInputStep;} {}
   decl {bool betaDOSInputPressed;} {}
   decl {std::string debuggerDirectory;} {}
@@ -409,6 +414,8 @@ class Ep128EmuGUI {open
   decl {static void menuCallback_Options_RuntimeHUD(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Machine_TwoDFX(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_InformationDialogs(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_DiagToggle(Fl_Widget *o, void *v);} {}
+  decl {static void menuCallback_Options_DiagPath(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_SndIncVol(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_SndDecVol(Fl_Widget *o, void *v);} {}
   decl {static void menuCallback_Options_SndConfig(Fl_Widget *o, void *v);} {}

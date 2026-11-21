@@ -27,6 +27,7 @@
 #include "display.hpp"
 #include "vm.hpp"
 #include "ep128vm.hpp"
+#include "c09_disk_media.hpp"
 #include "debuglib.hpp"
 #include "videorec.hpp"
 #include "ide.hpp"
@@ -2431,9 +2432,25 @@ namespace Ep128 {
         wd177x.setFloppyDrive((Ep128Emu::FloppyDrive *) 0);
         wd177x.setFloppyDrive(&(floppyDrives[n]));
       }
-      floppyDrives[n].setDiskImageFile(fileName_,
-                                       nTracks_, nSides_, nSectorsPerTrack_,
-                                       bytesPerSector_);
+      // Explicit .SDD/.TRD images are raw foreign media, not EXDOS FAT.
+      // Inspect extension AND exact size: 640 KiB is ambiguous otherwise.
+      // Always mount read-only; native CHS side-major only for SpeccyDOS.
+      const Ep128Emu::C09DiskMedia media=
+          Ep128Emu::inspectC09DiskMedia(fileName_);
+      if (media.type==Ep128Emu::C09DiskMedia::Invalid)
+        throw Ep128Emu::Exception(
+            "EP raw ZX disk: invalid SDD/TRD image length or unavailable file");
+      if (media.identified()) {
+        floppyDrives[n].setDiskImageFile(fileName_,media.tracks,
+                                         media.sides,media.sectors,
+                                         media.bytesPerSector,media.sideMajor());
+        floppyDrives[n].setUserWriteProtected(true);
+      }
+      else {
+        floppyDrives[n].setDiskImageFile(fileName_,
+                                         nTracks_,nSides_,nSectorsPerTrack_,
+                                         bytesPerSector_);
+      }
     }
 #ifdef ENABLE_SDEXT
     else if (n >= 8) {

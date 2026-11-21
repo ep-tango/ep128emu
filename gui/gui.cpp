@@ -19,12 +19,15 @@
 
 #include "gui.hpp"
 #include "build_identity.hpp"
+#include "diagnostic_logging.hpp"
 #include "titlebar_fields.hpp"
 #include "sdd_shutdown_guard.hpp"
+#include "c09_disk_media.hpp"
 #include "archive_drop.hpp"
 #include "archive_standard128_roms.hpp"
 #ifdef __linux__
 # include "enterprise_autorun_cadence.hpp"
+# include "rom_archive_catalog.hpp" // C15: same missing-ROM validation as Win/Mac
 #endif
 #ifdef WIN32
 # include "win_native_drop.hpp"
@@ -55,7 +58,7 @@
 #include "ep128vm.hpp"
 #include "zx128vm.hpp"
 #include "betadisk.hpp"
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
 #  include "speccydos_trial_media.hpp"
 #  include "betadisk_trial_media.hpp"
 #  include "betadisk_bundled_rom.hpp"
@@ -92,10 +95,10 @@ extern char **environ;
 #endif
 
 // FLUID omits conditional compilation directives inside embedded .fl code.
-// Keep the original Mac/Windows BetaDisk owner lifecycle, with Linux no-op.
+// C15: Keep Spectrum controller/drive shutdown lifecycle on all GUI hosts.
 void ep128emuShutdownBetaPre(Ep128EmuGUI& gui)
 {
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   Fl::remove_timeout(&Ep128EmuGUI::betaDOSInputCallback, (void*) &gui);
   gui.cancelBetaDOSAutoEnter();
   gui.betaDOSInputStep = -1;
@@ -106,8 +109,12 @@ void ep128emuShutdownBetaPre(Ep128EmuGUI& gui)
 
 void ep128emuShutdownBetaPost(Ep128EmuGUI& gui)
 {
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   gui.speccyDOSMountedSDDPath.clear();
+  for (unsigned n=0;n<4;++n) {
+    gui.c09SpeccyImagePath[n].clear();
+    gui.c09BetaImagePath[n].clear();
+  }
   gui.betaDOSInputStep = -1;
   Fl::remove_timeout(&Ep128EmuGUI::betaDOSInputCallback, (void*) &gui);
   Ep128EmuBetaTrial::removeTemporary(gui.betaDiskTemporaryDiskFile);
@@ -1028,13 +1035,10 @@ void Ep128EmuGUI::init_()
   oldSpeedPercentage = 100;
   oldPauseFlag = true;
   runtimeHUDEnabled = true;
-#ifdef ENABLE_A02_2DFX
-  // Preserve established A02 guest/demo behavior: extension installed in
-  // opt-in test builds until a user explicitly disables it.
-  a02Enabled = true;
-#else
+  // RELEASE-223: 2DFX expansion is opt-in. On a fresh profile or a legacy
+  // profile without gui.a02Enabled the card must be absent. A persisted
+  // setting (true OR false) still overrides this initialization on load.
   a02Enabled = false;
-#endif
   a02LogoStatus = (Fl_Box *) 0;
   a02PowerLED = (Fl_Box *) 0;
   a02EngineActive = false;
@@ -1044,6 +1048,7 @@ void Ep128EmuGUI::init_()
   a02DebugLastStatus = -1;
   a02DebugLastEnabled = false;
   a02DebugLastEngine = false;
+  diagnosticLoggingEnabled = false; // default OFF for legacy and new profiles
   showInformationalDialogs = false;
   betaDOSAutoEnterOnReset = false;
   betaDOSAutoEnterPolls = 0;
@@ -1134,6 +1139,12 @@ void Ep128EmuGUI::init_()
   betaDiskTemporaryDiskFile.clear();
   speccyDOSWriteProtect=false;
   betaDiskWriteProtect=false;
+  for (unsigned n=0;n<4;++n) {
+    c09SpeccyImagePath[n].clear();
+    c09BetaImagePath[n].clear();
+    c09SpeccyWriteProtect[n]=false;
+    c09BetaWriteProtect[n]=false;
+  }
   betaDOSInputStep = -1;
   betaDOSInputPressed = false;
   debuggerDirectory = defaultDir_;
@@ -1174,6 +1185,13 @@ void Ep128EmuGUI::init_()
   guiConfig.createKey("gui.mainWindowPositionX", mainWindowPositionX);
   guiConfig.createKey("gui.mainWindowPositionY", mainWindowPositionY);
   guiConfig.createKey("gui.runtimeHUDEnabled", runtimeHUDEnabled);
+#ifdef ENABLE_A02_2DFX
+  // Keep the expansion attachment choice in per-user gui_cfg.dat. Legacy
+  // configs without this key start with the new OFF default. Explicitly
+  // saved true/false values are preserved; non-2DFX binaries cannot rewrite it.
+  guiConfig.createKey("gui.a02Enabled", a02Enabled);
+#endif
+  guiConfig.createKey("gui.diagnosticLoggingEnabled", diagnosticLoggingEnabled);
   guiConfig.createKey("gui.showInformationalDialogs", showInformationalDialogs);
   guiConfig.createKey("gui.betaDOSAutoEnterOnReset", betaDOSAutoEnterOnReset);
   guiConfig.createKey("gui.tapeRelayClickEnabled", tapeRelayClickEnabled);
@@ -1278,11 +1296,11 @@ void Ep128EmuGUI::updateDisplay_windowMode()
     statusDisplayGroup->show();
     mainMenuBar->resize(0, 2, 380, getMenuBarHeight());
     mainMenuBar->show();
-    if (typeid(vm) != typeid(ZX128::ZX128VM)) {
-      diskStatusDisplayGroup->resize(statusDisplayGroup->x() + 2,
-                                     statusDisplayGroup->y(), 30, 30);
-      diskStatusDisplayGroup->show();
-    }
+    // C10: the existing A-D floppy activity panel is shared by Enterprise,
+    // Spectrum (SpeccyDOS/Beta Disk), CPC and TVC. Fullscreen still hides it.
+    diskStatusDisplayGroup->resize(statusDisplayGroup->x() + 2,
+                                   statusDisplayGroup->y(), 30, 30);
+    diskStatusDisplayGroup->show();
   }
   else {
     statusDisplayGroup->hide();
@@ -1792,6 +1810,42 @@ void Ep128EmuGUI::syncRecordingStatusState()
     updateRecordingStatusDisplay();
 }
 
+// C10: one display renderer for the normal GUI loop and C09's modeless
+// nested FLTK pump. The latter must keep polling the live VM status while
+// the user leaves the drive window open (e.g. during guest LIST/CAT).
+static void c10RenderFloppyDriveLEDs(
+    Fl_Box *driveALEDDisplay, Fl_Box *driveBLEDDisplay,
+    Fl_Box *driveCLEDDisplay, Fl_Box *driveDLEDDisplay,
+    uint32_t& oldFloppyDriveLEDState, uint32_t newFloppyDriveLEDState)
+{
+  if (newFloppyDriveLEDState != oldFloppyDriveLEDState) {
+    oldFloppyDriveLEDState = newFloppyDriveLEDState;
+    // FLTK color (5*8*5 RGB) = 56 + 8*R(0..4) + G(0..7) + 40*B(0..4)
+    static const unsigned char ledColors_[64] = {
+       56,  92,  63,  87,  128,  92,  63,  87,
+       56,  92,  63,  87,  128, 128, 128, 128,
+      236,  92,  63,  87,  128,  92,  63,  87,
+      236,  92,  63,  87,  128, 128, 128, 128,
+      236, 236, 236, 236,  236, 236, 236, 236,
+      236, 236, 236, 236,  236, 236, 236, 236,
+      239, 239, 239, 239,  239, 239, 239, 239,
+      239, 239, 239, 239,  239, 239, 239, 239
+    };
+    driveALEDDisplay->color(
+        Fl_Color(ledColors_[newFloppyDriveLEDState & 0x0FU]));
+    driveALEDDisplay->redraw();
+    driveBLEDDisplay->color(
+        Fl_Color(ledColors_[(newFloppyDriveLEDState >> 8) & 0x0FU]));
+    driveBLEDDisplay->redraw();
+    driveCLEDDisplay->color(
+        Fl_Color(ledColors_[(newFloppyDriveLEDState >> 16) & 0x3FU]));
+    driveCLEDDisplay->redraw();
+    driveDLEDDisplay->color(
+        Fl_Color(ledColors_[(newFloppyDriveLEDState >> 24) & 0x3FU]));
+    driveDLEDDisplay->redraw();
+  }
+}
+
 void Ep128EmuGUI::updateDisplay(double t)
 {
 #ifdef WIN32
@@ -2068,33 +2122,10 @@ void Ep128EmuGUI::updateDisplay(double t)
     rem1StatusDisplay->redraw();
     rem2StatusDisplay->redraw();
   }
-  uint32_t  newFloppyDriveLEDState = vmThreadStatus.floppyDriveLEDState;
-  if (newFloppyDriveLEDState != oldFloppyDriveLEDState) {
-    oldFloppyDriveLEDState = newFloppyDriveLEDState;
-    // FLTK color (5*8*5 RGB) = 56 + 8*R(0..4) + G(0..7) + 40*B(0..4)
-    static const unsigned char ledColors_[64] = {
-       56,  92,  63,  87,  128,  92,  63,  87,
-       56,  92,  63,  87,  128, 128, 128, 128,
-      236,  92,  63,  87,  128,  92,  63,  87,
-      236,  92,  63,  87,  128, 128, 128, 128,
-      236, 236, 236, 236,  236, 236, 236, 236,
-      236, 236, 236, 236,  236, 236, 236, 236,
-      239, 239, 239, 239,  239, 239, 239, 239,
-      239, 239, 239, 239,  239, 239, 239, 239
-    };
-    driveALEDDisplay->color(
-        Fl_Color(ledColors_[newFloppyDriveLEDState & 0x0FU]));
-    driveALEDDisplay->redraw();
-    driveBLEDDisplay->color(
-        Fl_Color(ledColors_[(newFloppyDriveLEDState >> 8) & 0x0FU]));
-    driveBLEDDisplay->redraw();
-    driveCLEDDisplay->color(
-        Fl_Color(ledColors_[(newFloppyDriveLEDState >> 16) & 0x3FU]));
-    driveCLEDDisplay->redraw();
-    driveDLEDDisplay->color(
-        Fl_Color(ledColors_[(newFloppyDriveLEDState >> 24) & 0x3FU]));
-    driveDLEDDisplay->redraw();
-  }
+  c10RenderFloppyDriveLEDs(
+      driveALEDDisplay, driveBLEDDisplay, driveCLEDDisplay,
+      driveDLEDDisplay, oldFloppyDriveLEDState,
+      vmThreadStatus.floppyDriveLEDState);
   double statsElapsed = statsTimer.getRealTime();
   if (statsElapsed >= 0.5) {
     uint64_t currentFrameSequence = display.getFrameSequenceNumber();
@@ -2151,6 +2182,7 @@ void Ep128EmuGUI::updateDisplay(double t)
 
 void Ep128EmuGUI::errorMessage(const char *msg)
 {
+  Ep128EmuDiagnostic::event("GUI_ERROR",msg);
   Fl::lock();
   while (errorMessageWindow->shown()) {
     Fl::unlock();
@@ -2233,7 +2265,7 @@ int Ep128EmuGUI::getMenuBarHeight() const
 
 void Ep128EmuGUI::applyMenuSize()
 {
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   int menuTextSize = FL_NORMAL_SIZE;
   int menuLineSpacing = 4;
 #ifdef __APPLE__
@@ -2313,7 +2345,7 @@ void Ep128EmuGUI::applyRewindHistoryLimit()
 
 void Ep128EmuGUI::createMenus()
 {
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   applyMenuSize();
 #endif
 #if defined(LINUX_FLTK_VERSION) && (LINUX_FLTK_VERSION >= 10302)
@@ -2429,7 +2461,7 @@ void Ep128EmuGUI::createMenus()
   mainMenuBar->add("File/Automatic screenshot folder/Use Pictures folder",
                    (char *) 0, &menuCallback_File_AutoScreenshotDefault,
                    (void *) this);
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   mainMenuBar->add("File/Screenshot confirmation sound", (char *) 0,
                    &menuCallback_File_ScreenshotSound, (void *) this,
                    FL_MENU_TOGGLE | (screenshotSoundEnabled ? FL_MENU_VALUE : 0));
@@ -2450,7 +2482,7 @@ void Ep128EmuGUI::createMenus()
                    (char *) 0, &menuCallback_Machine_Speed_200, (void *) this);
   mainMenuBar->add("Machine/Speed/400% (" EP128EMU_ALT_KEY_TEXT "6)",
                    (char *) 0, &menuCallback_Machine_Speed_400, (void *) this);
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   mainMenuBar->add("Machine/Emulated machine/Enterprise",
                    (char *) 0, &menuCallback_Machine_RestartAsEP, (void *) this);
   mainMenuBar->add("Machine/Emulated machine/ZX Spectrum",
@@ -2460,44 +2492,25 @@ void Ep128EmuGUI::createMenus()
   mainMenuBar->add("Machine/Emulated machine/Videoton TVC",
                    (char *) 0, &menuCallback_Machine_RestartAsTVC, (void *) this);
 #endif
-#if defined(__APPLE__) || defined(WIN32)
-  if (iconNum == 1) { // Spectrum only; explicit experimental opt-in
-    mainMenuBar->add("Machine/SpeccyDOS (experimental)/SpeccyDOS 4.2 - WD1770 (bundled ROM)",
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
+  if (iconNum == 1) { // Spectrum ROM/controller selections only
+    mainMenuBar->add("Machine/SpeccyDOS/SpeccyDOS 4.2 - WD1770 (bundled ROM)",
                      (char *) 0, &menuCallback_Machine_SpeccyDOSBundled1770, (void *) this);
-    mainMenuBar->add("Machine/SpeccyDOS (experimental)/SpeccyDOS 4.2 - WD1772 (bundled ROM)",
+    mainMenuBar->add("Machine/SpeccyDOS/SpeccyDOS 4.2 - WD1772 (bundled ROM)",
                      (char *) 0, &menuCallback_Machine_SpeccyDOSBundled1772, (void *) this);
-    mainMenuBar->add("Machine/SpeccyDOS (experimental)/Load external SpeccyDOS 4.x ROM...",
+    mainMenuBar->add("Machine/SpeccyDOS/Load external SpeccyDOS 4.x ROM...",
                      (char *) 0, &menuCallback_Machine_SpeccyDOSROM, (void *) this);
-    mainMenuBar->add("Machine/SpeccyDOS (experimental)/Insert SDD drive A...",
-                     (char *) 0, &menuCallback_Machine_SpeccyDOSDisk, (void *) this);
-    mainMenuBar->add("Machine/SpeccyDOS (experimental)/Write protect drive A",
-                     (char *) 0, &menuCallback_Machine_SpeccyDOSWriteProtect,
-                     (void *) this, FL_MENU_TOGGLE);
-    mainMenuBar->add("Machine/SpeccyDOS (experimental)/Eject drive A",
-                     (char *) 0, &menuCallback_Machine_SpeccyDOSEject, (void *) this);
-    mainMenuBar->add("Machine/SpeccyDOS (experimental)/Disable SpeccyDOS",
+    mainMenuBar->add("Machine/SpeccyDOS/Disable SpeccyDOS",
                      (char *) 0, &menuCallback_Machine_SpeccyDOSDisable, (void *) this);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Enable TR-DOS 5.03 (recommended)",
+    mainMenuBar->add("Machine/Beta Disk/Enable TR-DOS 5.03 (recommended)",
                      (char *) 0, &menuCallback_Machine_BetaDiskBundled503, (void *) this);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Enable TR-DOS 5.04T (verified)",
+    mainMenuBar->add("Machine/Beta Disk/Enable TR-DOS 5.04T (verified)",
                      (char *) 0, &menuCallback_Machine_BetaDiskBundled504, (void *) this);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Enable TR-DOS 6.04",
+    mainMenuBar->add("Machine/Beta Disk/Enable TR-DOS 6.04",
                      (char *) 0, &menuCallback_Machine_BetaDiskBundled604, (void *) this);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Load external 16K TR-DOS ROM...",
+    mainMenuBar->add("Machine/Beta Disk/Load external 16K TR-DOS ROM...",
                      (char *) 0, &menuCallback_Machine_BetaDiskROM, (void *) this);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Enter TR-DOS",
-                     (char *) 0, &menuCallback_Machine_BetaDiskEnterDOS, (void *) this);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Auto-enter TR-DOS after reset or TRD insert",
-                     (char *) 0, &menuCallback_Machine_BetaDiskAutoEnter,
-                     (void *) this, FL_MENU_TOGGLE);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Insert TRD drive A...",
-                     (char *) 0, &menuCallback_Machine_BetaDiskTRD, (void *) this);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Write protect drive A",
-                     (char *) 0, &menuCallback_Machine_BetaDiskWriteProtect,
-                     (void *) this, FL_MENU_TOGGLE);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Eject TRD drive A",
-                     (char *) 0, &menuCallback_Machine_BetaDiskEject, (void *) this);
-    mainMenuBar->add("Machine/Beta Disk (experimental)/Disable Beta Disk",
+    mainMenuBar->add("Machine/Beta Disk/Disable Beta Disk",
                      (char *) 0, &menuCallback_Machine_BetaDiskDisable, (void *) this);
   }
 #endif
@@ -2691,7 +2704,7 @@ void Ep128EmuGUI::createMenus()
   updatePixelPerfectMenuLabel(true);
   mainMenuBar->add("Options/Display/Cycle display mode",
                    (char *) 0, &menuCallback_Options_DpyMode, (void *) this);
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   mainMenuBar->add("Options/Display/Menu size/Standard",
                    (char *) 0, &menuCallback_Options_MenuSizeStandard,
                    (void *) this);
@@ -2713,6 +2726,12 @@ void Ep128EmuGUI::createMenus()
   mainMenuBar->add("Options/Notifications/Show informational dialogs",
                    (char *) 0, &menuCallback_Options_InformationDialogs,
                    (void *) this, FL_MENU_TOGGLE);
+  mainMenuBar->add("Options/Diagnostics/Enable diagnostic logging",
+                   (char *) 0, &menuCallback_Options_DiagToggle,
+                   (void *) this, FL_MENU_TOGGLE);
+  mainMenuBar->add("Options/Diagnostics/Copy log file path",
+                   (char *) 0, &menuCallback_Options_DiagPath,
+                   (void *) this);
   mainMenuBar->add("Options/Display/Runtime status display",
                    (char *) 0, &menuCallback_Options_RuntimeHUD, (void *) this);
   {
@@ -2723,7 +2742,7 @@ void Ep128EmuGUI::createMenus()
         const_cast<Fl_Menu_Item *>(mainMenuBar->menu() + n)->set();
     }
   }
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   if (iconNum == 0) {
     mainMenuBar->add("Options/Sound/Tape remote relay click",
                      (char *) 0, &menuCallback_Options_TapeRelayClick,
@@ -2767,12 +2786,11 @@ void Ep128EmuGUI::createMenus()
                      &menuCallback_Options_FloppyRpD, (void *) this);
     mainMenuBar->add("Options/Disk/Replace floppy/All drives", (char *) 0,
                      &menuCallback_Options_FloppyRpl, (void *) this);
-    mainMenuBar->add("Options/Disk/Configure... (" EP128EMU_ALT_KEY_TEXT "D)", (char *) 0,
-                     &menuCallback_Options_FloppyCfg, (void *) this);
   }
-  else {
-    diskStatusDisplayGroup->hide();
-  }
+  // Keep the shared floppy activity panel for Spectrum too. Machine type
+  // only controls which legacy disk menu actions are listed above.
+  mainMenuBar->add("Options/Disk/Configure... (" EP128EMU_ALT_KEY_TEXT "D)", (char *) 0,
+                   &menuCallback_Options_FloppyCfg, (void *) this);
   mainMenuBar->add("Options/Process priority/Idle",
                    (char *) 0, &menuCallback_Options_PPriority, (void *) this);
   mainMenuBar->add("Options/Process priority/Below normal",
@@ -2881,7 +2899,7 @@ void Ep128EmuGUI::run()
     }
   }
 #endif
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   // Apply the persisted menu-size choice before the main window is shown.
   applyMenuSize();
 #endif
@@ -2891,6 +2909,18 @@ void Ep128EmuGUI::run()
     printerCaptureEnabled = false;
     printerCaptureOptInVersion = 1;
   }
+  // Turn on the persisted log only after loading the existing GUI profile.
+  // The pre-VM OpenGL probe has been kept in memory for this moment.
+  if (!Ep128EmuDiagnostic::configure(diagnosticLoggingEnabled)) {
+    diagnosticLoggingEnabled = false;
+    if (startupError.empty())
+      startupError = "Cannot write diagnostic log in user profile.";
+  }
+  if (diagnosticLoggingEnabled) {
+    Ep128EmuDiagnostic::event("APP","ep128emu " EP128EMU_CUSTOM_VERSION);
+    Ep128EmuDiagnostic::event("MACHINE",ep128emuMachineShortName(vm));
+  }
+  updateMenu();
   // Apply persisted rewind budget after gui_cfg.dat has been loaded.
   applyRewindHistoryLimit();
   if (printerOutputFormat != 0 && printerOutputFormat != 1)
@@ -3032,6 +3062,16 @@ void Ep128EmuGUI::run()
   vm.setFileNameCallback(&fileNameCallback, (void *) this);
   vm.setBreakPointCallback(&Ep128EmuGUI_DebugWindow::breakPointCallback,
                            (void *) debugWindow);
+#ifdef ENABLE_A02_2DFX
+  // GUI configuration was loaded before the VM thread started. The
+  // menu checkmark alone is insufficient: the EP/TVC hardware defaults
+  // to attached in existing builds. Restore the saved physical 2DFX
+  // attachment, including I/O callbacks and IRQ, while VMThread is locked.
+  if (typeid(vm) == typeid(Ep128::Ep128VM))
+    static_cast<Ep128::Ep128VM&>(vm).setA02Enabled(a02Enabled);
+  else if (typeid(vm) == typeid(TVC64::TVC64VM))
+    static_cast<TVC64::TVC64VM&>(vm).setA02Enabled(a02Enabled);
+#endif
   // Protected by the already-held VMThread lock. Enterprise only.
   if (typeid(vm) == typeid(Ep128::Ep128VM)) {
     Ep128::Ep128VM& ep = static_cast<Ep128::Ep128VM&>(vm);
@@ -3048,7 +3088,7 @@ void Ep128EmuGUI::run()
   vmThread.unlock();
   // run emulation
   vmThread.pause(false);
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   // After a machine switch the new FLTK/GL display exists but may not own
   // keyboard focus. This also affects the first Alt combination on Windows.
   // Restore the focus once on startup, not repeatedly (dialogs must retain
@@ -3119,6 +3159,7 @@ void Ep128EmuGUI::run()
   }
   Ep128EmuArchiveDrop::removeTemporaryDirectory(archiveTemporaryDirectory);
   archiveTemporaryDirectory.clear();
+  Ep128EmuDiagnostic::event("APP","Emulator session ended");
   // save GUI configuration
   try {
     Ep128Emu::File  f;
@@ -3889,7 +3930,7 @@ void Ep128EmuGUI::loadConfigFile(const std::string& fileName, bool addRecent)
       Ep128Emu::ConfigurationDB::getMachineTypeMetadata(fileName.c_str());
   if (!prepareMachineTypedLoad(fileMachineType, fileName, 2, addRecent))
     return;
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   Ep128Emu::File::Buffer previousConfig;
   config.saveState(previousConfig);
 #endif
@@ -3930,7 +3971,7 @@ void Ep128EmuGUI::loadConfigFile(const std::string& fileName, bool addRecent)
     return;
   }
 #endif
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   // Generated presets may refer to firmware absent from the original 72-ROM
   // archive. Do not replace it with a different ROM or half-switch machines.
   // Explain the missing file and leave the currently running VM untouched.
@@ -5549,7 +5590,7 @@ bool Ep128EmuGUI::handleApplicationShortcut(int keyCode, bool isKeyPress)
       menuCallback_Machine_TapeForce((Fl_Widget *) 0, (void *) this);
       break;
     case EP_SC_TRDOS_ENTER:
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
       menuCallback_Machine_BetaDiskEnterDOS((Fl_Widget *) 0, (void *) this);
 #endif
       break;
@@ -5606,7 +5647,7 @@ bool Ep128EmuGUI::handleApplicationShortcut(int keyCode, bool isKeyPress)
   return false;
 }
 
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
 static void ep128emuSetMenuItemEnabled(Fl_Menu_Bar *bar,
                                        const char *path, bool enabled)
 {
@@ -5687,10 +5728,17 @@ void Ep128EmuGUI::updateMenu()
   int     tmp = config.vm.processPriority + 6;
   tmp = (tmp > 4 ? (tmp < 8 ? tmp : 8) : 4);
   getMenuItem(tmp).setonly();
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
   // Recompute from VM-owned controller state, never from remembered menu state.
   // updateMenu() can be invoked while applyEmulatorConfiguration owns VMThread
   // lock; do NOT re-lock VMThread here. Expansion mutations are GUI-thread only.
+  const Fl_Menu_Item *diagItem=mainMenuBar->find_item(
+      "Options/Diagnostics/Enable diagnostic logging");
+  if (diagItem) {
+    Fl_Menu_Item *m=const_cast<Fl_Menu_Item *>(diagItem);
+    if (diagnosticLoggingEnabled) m->set();
+    else m->clear();
+  }
   const Fl_Menu_Item *info = mainMenuBar->find_item(
       "Options/Notifications/Show informational dialogs");
   if (info) {
@@ -5703,50 +5751,18 @@ void Ep128EmuGUI::updateMenu()
     ZX128::BetaDiskBus *beta = zx.getBetaDiskForTesting();
     const bool betaOn = (beta != 0);
     const bool speccyOn = (zx.getSpeccyDOSForTesting() != 0);
-    const bool betaMounted = betaOn &&
-        beta->isDiskMounted();
-    const bool speccyMounted = speccyOn &&
-        !speccyDOSMountedSDDPath.empty();
     const bool idleInput = (betaDOSInputStep < 0 && archiveAutoRunPhase < 0);
     const bool canEnable = !betaOn && !speccyOn;
     // All paths below match the exact labels in createMenus().
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS (experimental)/SpeccyDOS 4.2 - WD1770 (bundled ROM)", canEnable);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS (experimental)/SpeccyDOS 4.2 - WD1772 (bundled ROM)", canEnable);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS (experimental)/Load external SpeccyDOS 4.x ROM...", canEnable);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS (experimental)/Insert SDD drive A...", speccyOn && !speccyMounted);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS (experimental)/Write protect drive A",
-        speccyOn && (!speccyMounted ||
-          zx.getSpeccyDOSForTesting()->getDrive(0).isNativeSDDWritable()));
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS (experimental)/Eject drive A", speccyMounted);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS (experimental)/Disable SpeccyDOS", speccyOn);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Enable TR-DOS 5.03 (recommended)", canEnable);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Enable TR-DOS 5.04T (verified)", canEnable);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Enable TR-DOS 6.04", canEnable);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Load external 16K TR-DOS ROM...", canEnable);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Enter TR-DOS", betaOn && idleInput);
-    const Fl_Menu_Item* autoItem = mainMenuBar->find_item(
-        "Machine/Beta Disk (experimental)/Auto-enter TR-DOS after reset or TRD insert");
-    if (autoItem) {
-      Fl_Menu_Item* mm=const_cast<Fl_Menu_Item*>(autoItem);
-      if (betaDOSAutoEnterOnReset) mm->set(); else mm->clear();
-    }
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Insert TRD drive A...", betaOn && !betaMounted && idleInput);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Write protect drive A",
-        betaOn && idleInput && (!betaMounted || beta->isWritableCopyMounted()));
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Eject TRD drive A", betaMounted && idleInput);
-    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk (experimental)/Disable Beta Disk", betaOn && idleInput);
-    const Fl_Menu_Item* spProt=mainMenuBar->find_item("Machine/SpeccyDOS (experimental)/Write protect drive A");
-    if (spProt) {
-      const bool wp=speccyMounted ? zx.getSpeccyDOSForTesting()->getDrive(0).getIsWriteProtected() : speccyDOSWriteProtect;
-      Fl_Menu_Item* m=const_cast<Fl_Menu_Item*>(spProt);
-      if (wp) m->set(); else m->clear();
-    }
-    const Fl_Menu_Item* bProt=mainMenuBar->find_item("Machine/Beta Disk (experimental)/Write protect drive A");
-    if (bProt) {
-      const bool wp=betaMounted ? beta->isWriteProtected() : betaDiskWriteProtect;
-      Fl_Menu_Item* m=const_cast<Fl_Menu_Item*>(bProt);
-      if (wp) m->set(); else m->clear();
-    }
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS/SpeccyDOS 4.2 - WD1770 (bundled ROM)", canEnable);
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS/SpeccyDOS 4.2 - WD1772 (bundled ROM)", canEnable);
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS/Load external SpeccyDOS 4.x ROM...", canEnable);
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/SpeccyDOS/Disable SpeccyDOS", speccyOn);
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk/Enable TR-DOS 5.03 (recommended)", canEnable);
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk/Enable TR-DOS 5.04T (verified)", canEnable);
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk/Enable TR-DOS 6.04", canEnable);
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk/Load external 16K TR-DOS ROM...", canEnable);
+    ep128emuSetMenuItemEnabled(mainMenuBar, "Machine/Beta Disk/Disable Beta Disk", betaOn && idleInput);
     ep128emuSetMenuItemEnabled(mainMenuBar, "File/Save snapshot (" EP128EMU_ALT_KEY_TEXT "S)", !betaOn && !speccyOn);
     ep128emuSetMenuItemEnabled(mainMenuBar, "File/Quick snapshot/Save", !betaOn && !speccyOn);
     ep128emuSetMenuItemEnabled(mainMenuBar, "File/Record demo", !betaOn && !speccyOn);
@@ -6736,34 +6752,61 @@ void Ep128EmuGUI::menuCallback_File_AutoScreenshotDefault(Fl_Widget *o, void *v)
   Fl::add_timeout(2.0, &screenshotNoticeTimeout, (void *) &gui_);
 }
 
+// C10: the C09 disk window is *presented* modeless, but C09 still owns an
+// inner FLTK wait until the shared legacy controls are restored. Defer a
+// File/Quit from that inner callback until it has fully unwound: otherwise
+// shutdown and the panel's VM lock can overlap or attempt to lock an exiting
+// emulation worker. Do not bypass the durable SDD/TRD sync gate.
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
+namespace {
+  static bool c09DiskPanelOpen=false;
+  static Ep128EmuGUI *c09DiskPanelOwner=nullptr;
+  static bool c09PendingQuit=false;
+  static void c10DeferredQuitAfterPanel(void *userData) {
+    Ep128EmuGUI *gui=static_cast<Ep128EmuGUI*>(userData);
+    if(c09DiskPanelOpen || Fl::modal()) {
+      Fl::repeat_timeout(0.02,c10DeferredQuitAfterPanel,userData);
+      return;
+    }
+    c09PendingQuit=false;
+    // The main FLTK window has the original File/Quit callback; execute it
+    // after C09 has restored ALL shared legacy disk controls (RAII).
+    if(gui && gui->mainWindow && gui->mainWindow->shown())
+      gui->mainWindow->do_callback();
+  }
+}
+#endif
+
 // Called on each graceful shutdown or host machine switch BEFORE asking the
 // worker to quit. Only a writable native SDD requires additional I/O.
 // The check holds the existing VMThread lock so no guest write can race it.
 // A failed sync preserves the live drive and its dirty cache for retry.
 bool Ep128EmuGUI::checkWritableSDDBeforeShutdown()
 {
-  // No mounted SDD means no host media can have pending native writes;
-  // avoid acquiring VMThread for ordinary ZX/Enterprise quit or switch.
-  if (ep128emuMachineType(vm) != 1 || speccyDOSMountedSDDPath.empty())
-    return true;
+  if (ep128emuMachineType(vm) != 1) return true;
+  bool anyMedia=false;
+  for (unsigned n=0;n<4;++n)
+    if (!c09SpeccyImagePath[n].empty() || !c09BetaImagePath[n].empty())
+      anyMedia=true;
+  if (!speccyDOSMountedSDDPath.empty()) anyMedia=true;
+  if (!anyMedia) return true;
   if (!lockVMThread())
-    throw std::runtime_error("SpeccyDOS: VM is busy; shutdown cancelled");
+    throw std::runtime_error("ZX disk: VM is busy; shutdown cancelled");
   try {
-    ZX128::ZX128VM& zx = static_cast<ZX128::ZX128VM&>(vm);
-    ZX128::SpeccyDOSBus *bus = zx.getSpeccyDOSForTesting();
-    if (bus) {
-      Ep128Emu::FloppyDrive& disk = bus->getDrive(0);
-      if (!ep128emuSDDCanGracefullyStop(disk))
+    ZX128::ZX128VM& zx=static_cast<ZX128::ZX128VM&>(vm);
+    ZX128::SpeccyDOSBus *sp=zx.getSpeccyDOSForTesting();
+    if (sp) for (unsigned n=0;n<4;++n) {
+      if (!ep128emuSDDCanGracefullyStop(sp->getDrive(n)))
         throw std::runtime_error(
-            "SpeccyDOS: original SDD write/sync failed.\n"
-            "Quit or machine switch cancelled; SDD remains mounted.\n"
-            "Restore disk access and retry Eject or Quit.");
+            "SpeccyDOS: SDD write/sync failed on a mounted drive; "
+            "quit or machine switch cancelled; restore access and retry");
     }
+    ZX128::BetaDiskBus *bd=zx.getBetaDiskForTesting();
+    if (bd && !bd->syncWritableCopy())
+      throw std::runtime_error(
+          "Beta Disk: TRD write/sync failed; quit or machine switch cancelled");
   }
-  catch (...) {
-    unlockVMThread();
-    throw;
-  }
+  catch (...) {unlockVMThread();throw;}
   unlockVMThread();
   return true;
 }
@@ -6772,6 +6815,18 @@ void Ep128EmuGUI::menuCallback_File_Quit(Fl_Widget *o, void *v)
 {
   (void) o;
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
+  if(c09DiskPanelOpen && c09DiskPanelOwner==&gui_) {
+    if(!c09PendingQuit) {
+      c09PendingQuit=true;
+      // Stop accepting C09 actions and unwind the temporary widget callbacks
+      // before requesting the worker exit or checking writable media.
+      gui_.diskConfigWindow->window->hide();
+      Fl::add_timeout(0.02,c10DeferredQuitAfterPanel,&gui_);
+    }
+    return;
+  }
+#endif
   try {
     if (!gui_.checkWritableSDDBeforeShutdown())
       return;
@@ -6797,6 +6852,13 @@ void Ep128EmuGUI::requestMachineRestart(int machineType)
   restartLoadFileName.clear();
   try {
     vmThread.quit(false);
+    // Machine replacement is processed only AFTER the current FLTK
+    // callback returns to the emulator's main event loop. Spectrum's
+    // modeless disk panel has a nested Fl::wait() and must unwind NOW.
+    // Do not disturb the accepted EP/CPC/TVC disk configuration path.
+    if (typeid(vm)==typeid(ZX128::ZX128VM) &&
+        diskConfigWindow && diskConfigWindow->shown())
+      diskConfigWindow->window->hide();
   }
   catch (std::exception& e) {
     restartMachineType = -1;
@@ -6820,6 +6882,13 @@ void Ep128EmuGUI::requestMachineRestartAndLoad(
   restartLoadFileName = fileName;
   try {
     vmThread.quit(false);
+    // Machine replacement is processed only AFTER the current FLTK
+    // callback returns to the emulator's main event loop. Spectrum's
+    // modeless disk panel has a nested Fl::wait() and must unwind NOW.
+    // Do not disturb the accepted EP/CPC/TVC disk configuration path.
+    if (typeid(vm)==typeid(ZX128::ZX128VM) &&
+        diskConfigWindow && diskConfigWindow->shown())
+      diskConfigWindow->window->hide();
   }
   catch (std::exception& e) {
     restartMachineType = -1;
@@ -7141,7 +7210,30 @@ void Ep128EmuGUI::menuCallback_Machine_Speed_400(Fl_Widget *o, void *v)
   }
 }
 
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
+// C09 GUI-only controller lifecycle revision. Increment on successful firmware
+// installation/removal so an ALREADY OPEN modeless Disk configuration dialog
+// can rebuild its four drive actions immediately. This is GUI-thread-owned.
+namespace {
+  unsigned c09ZXDiskControllerGeneration=0;
+  // Do not confuse FLTK widget focus with the native window key state.
+  // ROM disable is a user-initiated action. It is safe to bring the emulator
+  // back only after any informational dialog has closed and after the C09
+  // modeless window has been rebuilt (which otherwise reclaims focus).
+  static void c09RestoreEmulatorFocusAfterROMDisable(
+      Fl_Window *mainWindow,Fl_Window *displayWindow)
+  {
+    if(!mainWindow || !mainWindow->shown() ||
+       !displayWindow || !displayWindow->shown() || Fl::modal())
+      return;
+#ifdef __APPLE__
+    ep128emuActivateMacOSWindow(mainWindow);
+#elif defined(WIN32)
+    ep128emuActivateWindowsDroppedFileWindow(mainWindow,displayWindow);
+#endif
+    displayWindow->take_focus();
+  }
+}
 // EF07H: optional bundled ROMs are resolved relative to the running .app.
 // Original external ROM chooser remains for future firmware experiments.
 // All device changes happen under the existing VM thread lock.
@@ -7163,7 +7255,9 @@ void Ep128EmuGUI::enableSpeccyDOSROM(const std::vector<uint8_t>& rom)
   }
   catch (...) {unlockVMThread();throw;}
   unlockVMThread();
+  ++c09ZXDiskControllerGeneration;
   speccyDOSMountedSDDPath.clear();
+  for(unsigned n=0;n<4;++n)c09SpeccyImagePath[n].clear();
   updateDisplay_windowTitle();
   updateMenu();
   if (showInformationalDialogs)
@@ -7227,6 +7321,7 @@ void Ep128EmuGUI::menuCallback_Machine_SpeccyDOSDisk(Fl_Widget *o, void *v)
     catch (...) {g.unlockVMThread();throw;}
     g.unlockVMThread();
     g.speccyDOSMountedSDDPath=path;
+    g.c09SpeccyImagePath[0]=path;
     g.updateMenu();
   }
   catch (std::exception& e) {g.errorMessage(e.what());}
@@ -7277,6 +7372,7 @@ void Ep128EmuGUI::menuCallback_Machine_SpeccyDOSEject(Fl_Widget *o, void *v)
     catch (...) {g.unlockVMThread();throw;}
     g.unlockVMThread();
     g.speccyDOSMountedSDDPath.clear();
+    g.c09SpeccyImagePath[0].clear();
     g.updateMenu();
   }
   catch (std::exception& e) {g.errorMessage(e.what());}
@@ -7291,21 +7387,28 @@ void Ep128EmuGUI::menuCallback_Machine_SpeccyDOSDisable(Fl_Widget *o, void *v)
       throw std::runtime_error("SpeccyDOS: VM is busy; please retry");
     try {
       ZX128::ZX128VM& zx=static_cast<ZX128::ZX128VM&>(g.vm);
-      if (zx.getSpeccyDOSForTesting() &&
-          !zx.getSpeccyDOSForTesting()->getDrive(0).syncNativeSDD())
-        throw std::runtime_error("SpeccyDOS: original SDD write/sync failed; disable cancelled");
+      if (zx.getSpeccyDOSForTesting())
+        for (unsigned n=0;n<4;++n)
+          if (!zx.getSpeccyDOSForTesting()->getDrive(n).syncNativeSDD())
+            throw std::runtime_error("SpeccyDOS: SDD write/sync failed; disable cancelled");
       zx.removeSpeccyDOS();
       g.vmThread.clearRewindHistory();
     }
     catch (...) {g.unlockVMThread();throw;}
     g.unlockVMThread();
+    ++c09ZXDiskControllerGeneration;
     g.speccyDOSMountedSDDPath.clear();
+    for (unsigned n=0;n<4;++n) g.c09SpeccyImagePath[n].clear();
     g.updateDisplay_windowTitle();
     g.updateMenu();
     if (g.showInformationalDialogs)
       fl_message("SpeccyDOS disabled. Normal Spectrum mode restored;\n"
                "Snapshots are available again; rewind needs newly recorded "
                "frames at normal speed before Pause.");
+    // Restore native key-window ownership after a successful disable, not
+    // during the optional informational modal dialog. C09Refresh repeats
+    // this after it re-shows the still-open disk panel.
+    c09RestoreEmulatorFocusAfterROMDisable(g.mainWindow,g.emulatorWindow);
   }
   catch (std::exception& e) {g.errorMessage(e.what());}
 }
@@ -7327,6 +7430,7 @@ void Ep128EmuGUI::enableBetaDiskROM(const std::vector<uint8_t>& rom)
   }
   catch (...) {unlockVMThread();throw;}
   unlockVMThread();
+  ++c09ZXDiskControllerGeneration;
   updateDisplay_windowTitle();
   updateMenu();
   if (showInformationalDialogs)
@@ -7492,7 +7596,7 @@ void Ep128EmuGUI::menuCallback_Machine_BetaDiskAutoEnter(Fl_Widget *o, void *v)
   (void)o;
   Ep128EmuGUI& g=*(reinterpret_cast<Ep128EmuGUI*>(v));
   const Fl_Menu_Item *item=g.mainMenuBar->find_item(
-      "Machine/Beta Disk (experimental)/Auto-enter TR-DOS after reset or TRD insert");
+      "Machine/Beta Disk/Auto-enter TR-DOS after reset or TRD insert");
   g.betaDOSAutoEnterOnReset=(item && item->value()!=0);
   if (!g.betaDOSAutoEnterOnReset) g.cancelBetaDOSAutoEnter();
   else g.armBetaDOSAutoEnterIfReady();  // Turning ON with a disk already mounted.
@@ -7564,6 +7668,7 @@ void Ep128EmuGUI::menuCallback_Machine_BetaDiskTRD(Fl_Widget *o, void *v)
     }
     catch (...) {g.unlockVMThread();throw;}
     g.unlockVMThread();
+    g.c09BetaImagePath[0]=path;
     g.updateMenu();
     // A newly mounted TRD completes the user's ROM + disk setup.
     // Trigger only the existing bounded, guarded 48 BASIC K-prompt entry.
@@ -7619,6 +7724,7 @@ void Ep128EmuGUI::menuCallback_Machine_BetaDiskEject(Fl_Widget *o, void *v)
     g.unlockVMThread();
     Ep128EmuBetaTrial::removeTemporary(g.betaDiskTemporaryDiskFile);
     g.betaDiskTemporaryDiskFile.clear();
+    g.c09BetaImagePath[0].clear();
     g.updateMenu();
   }
   catch (std::exception& e) {g.errorMessage(e.what());}
@@ -7638,25 +7744,33 @@ void Ep128EmuGUI::menuCallback_Machine_BetaDiskDisable(Fl_Widget *o, void *v)
       if (!zx.getBetaDiskForTesting())
         throw std::runtime_error("Beta Disk: firmware is not enabled");
       ZX128::BetaDiskBus *beta=zx.getBetaDiskForTesting();
-      if (beta->isWritableCopyMounted()) beta->ejectReadOnly();
-      zx.removeBetaDisk();  // only after private output is durably ejected
+      if (!beta->syncWritableCopy())
+        throw std::runtime_error("Beta Disk: TRD sync failed; disable cancelled");
+      for (unsigned n=0;n<4;++n) beta->ejectReadOnly(n);
+      zx.removeBetaDisk();  // all four writable media durably ejected
       g.vmThread.clearRewindHistory();
     }
     catch (...) {g.unlockVMThread();throw;}
     g.unlockVMThread();
+    ++c09ZXDiskControllerGeneration;
     Ep128EmuBetaTrial::removeTemporary(g.betaDiskTemporaryDiskFile);
     g.betaDiskTemporaryDiskFile.clear();
+    for (unsigned n=0;n<4;++n) g.c09BetaImagePath[n].clear();
     g.updateDisplay_windowTitle();
     g.updateMenu();
     if (g.showInformationalDialogs)
       fl_message("Beta Disk disabled and Spectrum cold reset complete.\n"
                "Snapshots are available again; rewind needs newly recorded "
                "frames at normal speed before Pause.");
+    // Restore native key-window ownership after a successful disable, not
+    // during the optional informational modal dialog. C09Refresh repeats
+    // this after it re-shows the still-open disk panel.
+    c09RestoreEmulatorFocusAfterROMDisable(g.mainWindow,g.emulatorWindow);
   }
   catch (std::exception& e) {g.errorMessage(e.what());}
 }
 
-#endif // __APPLE__ || WIN32
+#endif // __APPLE__ || WIN32 || __linux__
 
 void Ep128EmuGUI::menuCallback_Machine_OpenTape(Fl_Widget *o, void *v)
 {
@@ -8127,7 +8241,7 @@ void Ep128EmuGUI::menuCallback_Machine_Reset(Fl_Widget *o, void *v)
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
   try {
     gui_.vmThread.reset(false);
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
     gui_.armBetaDOSAutoEnterIfReady();
 #endif
   }
@@ -8142,7 +8256,7 @@ void Ep128EmuGUI::menuCallback_Machine_ColdReset(Fl_Widget *o, void *v)
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
   try {
     gui_.vmThread.reset(true);
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
     gui_.armBetaDOSAutoEnterIfReady();
 #endif
   }
@@ -8169,7 +8283,7 @@ void Ep128EmuGUI::menuCallback_Machine_ResetAll(Fl_Widget *o, void *v)
   (void) o;
   Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
   try {
-#if defined(__APPLE__) || defined(WIN32)
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
     gui_.cancelBetaDOSAutoEnter();
 #endif
     gui_.finishArchiveFileIOOverride(false, false);
@@ -8482,6 +8596,40 @@ void Ep128EmuGUI::menuCallback_Machine_TwoDFX(Fl_Widget *o, void *v)
 }
 #endif
 
+void Ep128EmuGUI::menuCallback_Options_DiagToggle(Fl_Widget *o, void *v)
+{
+  (void) o;
+  Ep128EmuGUI& gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
+  const Fl_Menu_Item *item=gui_.mainMenuBar->find_item(
+      "Options/Diagnostics/Enable diagnostic logging");
+  const bool on=(item && item->value()!=0);
+  if (!Ep128EmuDiagnostic::configure(on)) {
+    gui_.diagnosticLoggingEnabled=false;
+    gui_.updateMenu();
+    fl_alert("Cannot write diagnostic log in user profile.");
+    return;
+  }
+  gui_.diagnosticLoggingEnabled=on;
+  if (on) {
+    Ep128EmuDiagnostic::event("APP","ep128emu " EP128EMU_CUSTOM_VERSION);
+    Ep128EmuDiagnostic::event("MACHINE",ep128emuMachineShortName(gui_.vm));
+  }
+  gui_.updateMenu();
+}
+
+void Ep128EmuGUI::menuCallback_Options_DiagPath(Fl_Widget *o, void *v)
+{
+  (void) o;(void) v;
+  try {
+    const std::string path=Ep128EmuDiagnostic::logPath();
+    Fl::copy(path.c_str(),int(path.size()),1);
+    fl_message("Diagnostic log path copied to clipboard:\n%s\n"
+               "Enable logging, reproduce the problem, and share this file.",
+               path.c_str());
+  }
+  catch (...) { fl_alert("Cannot determine diagnostic log location."); }
+}
+
 void Ep128EmuGUI::menuCallback_Options_InformationDialogs(Fl_Widget *o, void *v)
 {
   (void) o;
@@ -8759,12 +8907,177 @@ void Ep128EmuGUI::menuCallback_Options_FloppyRpl(Fl_Widget *o, void *v)
   }
 }
 
-void Ep128EmuGUI::menuCallback_Options_FloppyCfg(Fl_Widget *o, void *v)
+// One actual FLTK Disk configuration form for Enterprise, Spectrum, CPC and TVC.
+// ZX temporarily binds its existing row widgets to C09 callbacks; no second
+// painted dialog or redirected legacy disk configuration is involved.
+namespace {
+  static void c09SharedWindowClose(Fl_Widget *w,void *) { w->hide(); }
+  class C09SharedDiskWindow {
+    struct WidgetState {
+      Fl_Widget *w;
+      Fl_Callback *callback;
+      void *data;
+      std::string label;
+      bool visible,active,readOnly;
+      Fl_Color cursorColor;
+      int x,y,width,height;
+    };
+    Ep128EmuGUI_DiskConfigWindow& d;
+    Fl_Window& w;
+    int originalChildren;
+    Fl_Callback *originalCallback;
+    void *originalUserData;
+    bool originalModal,originalNonModal;
+    std::vector<WidgetState> saved;
+  public:
+    explicit C09SharedDiskWindow(Ep128EmuGUI_DiskConfigWindow& dialog)
+      : d(dialog),w(*dialog.window),originalChildren(w.children()),
+        originalCallback(w.callback()),originalUserData(w.user_data()),
+        originalModal(w.modal()),originalNonModal(w.non_modal() && !w.modal()) {
+      d.updateWindow(); // Snapshot genuine legacy fields before ZX presentation.
+      w.callback(c09SharedWindowClose);
+      // C14: FLTK NON_MODAL is always-on-top, even while the emulator has
+      // keyboard focus. The nested C09 event pump already keeps this form
+      // responsive, so use NORMAL (neither modal nor non-modal) stacking.
+      // This matches the EP/CPC/TVC disk window and lets the native window
+      // manager raise whichever window the user selects on Mac and Windows.
+      w.clear_modal_states();
+      w.begin(); // Only guest-selected and TR-DOS footer controls are added.
+    }
+    void remember(Fl_Widget *widget) {
+      WidgetState state;
+      state.w=widget;
+      state.callback=widget->callback();
+      state.data=widget->user_data();
+      state.label=widget->label()?widget->label():"";
+      state.visible=(widget->visible()!=0);
+      state.active=(widget->active()!=0);
+      Fl_Input *input=dynamic_cast<Fl_Input*>(widget);
+      state.readOnly=(input ? input->readonly()!=0 : false);
+      state.cursorColor=(input ? input->cursor_color() : FL_FOREGROUND_COLOR);
+      state.x=widget->x();state.y=widget->y();
+      state.width=widget->w();state.height=widget->h();
+      saved.push_back(state);
+    }
+    ~C09SharedDiskWindow() {
+      w.hide();
+      while(w.children()>originalChildren) {
+        Fl_Widget *child=w.child(w.children()-1);
+        w.remove(child);
+        delete child;
+      }
+      for(std::vector<WidgetState>::reverse_iterator i=saved.rbegin();
+          i!=saved.rend();++i) {
+        i->w->callback(i->callback,i->data);
+        i->w->copy_label(i->label.c_str());
+        i->w->resize(i->x,i->y,i->width,i->height);
+        if(Fl_Input *input=dynamic_cast<Fl_Input*>(i->w)) {
+          input->readonly(i->readOnly);
+          input->cursor_color(i->cursorColor);
+        }
+        if(i->active)i->w->activate();else i->w->deactivate();
+        if(i->visible)i->w->show();else i->w->hide();
+      }
+      w.callback(originalCallback,originalUserData);
+      w.clear_modal_states();
+      if(originalModal)w.set_modal();
+      else if(originalNonModal)w.set_non_modal();
+      w.end();
+      d.updateWindow(); // Restore previous machine's legacy media paths.
+    }
+    C09SharedDiskWindow(const C09SharedDiskWindow&) = delete;
+    C09SharedDiskWindow& operator=(const C09SharedDiskWindow&) = delete;
+  };
+}
+// C09 four-row Spectrum manager, isolated from Enterprise floppy configuration.
+#include "c09_disk_file_identity.hpp"
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
+namespace {
+  enum C09ZXDiskAction { C09Close, C09Insert, C09Eject, C09Protect,
+                         C09EnterDOS, C09AutoDOS, C09Refresh };
+  struct C09ZXDiskSelection {
+    int action,slot;
+    Fl_Window *window;
+    Ep128EmuGUI *gui;
+    std::string *imageDirectory;
+    bool speccy;
+    std::string insertPath;
+  };
+  struct C09ZXDiskButton {C09ZXDiskSelection *sel;int action,slot;};
+  static void c09ZXDiskButtonClick(Fl_Widget*,void *data) {
+    C09ZXDiskButton *b=static_cast<C09ZXDiskButton*>(data);
+    C09ZXDiskSelection& selection=*b->sel;
+    if(b->action==C09Insert) {
+      // C11: the original callback hid the entire modeless disk panel
+      // BEFORE opening the native file picker. Leave it visible behind
+      // the picker, and keep it open if the user cancels. Only unwind the
+      // temporary C09 widgets after the picker has accepted an image.
+      char title[100];
+      std::snprintf(title,sizeof(title),"Insert %s into drive %c",
+          selection.speccy?"SDD":"TRD",
+          selection.speccy?char('0'+b->slot):char('A'+b->slot));
+      std::string path;
+      try {
+        if(!selection.gui->browseFile(path,*selection.imageDirectory,
+            selection.speccy?"SpeccyDOS SDD images\t*.sdd":"TR-DOS TRD images\t*.trd",
+            Fl_Native_File_Chooser::BROWSE_FILE,title))
+          return; // Cancel or native-picker error: panel remains open.
+      }
+      catch(const std::exception& e) {
+        selection.gui->errorMessage(e.what());
+        return;
+      }
+      if(path.empty())return;
+      selection.insertPath.swap(path);
+    }
+    selection.action=b->action;
+    selection.slot=b->slot;
+    selection.window->hide();
+  }
+}
+#endif
+
+void Ep128EmuGUI::menuCallback_Options_FloppyCfg(Fl_Widget *o,void *v)
 {
-  (void) o;
-  Ep128EmuGUI&  gui_ = *(reinterpret_cast<Ep128EmuGUI *>(v));
-  if (typeid(gui_.vm) != typeid(ZX128::ZX128VM))
-    gui_.diskConfigWindow->show();
+  (void)o;
+  Ep128EmuGUI& g=*(reinterpret_cast<Ep128EmuGUI*>(v));
+  // Alt+D can be pressed again while the Spectrum disk panel is open.
+  // Never re-enter its FLTK wait loop or take a second GUI state snapshot.
+  // C15: Spectrum disk panel uses the same normal FLTK window on all hosts.
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
+  if(c09DiskPanelOpen) {
+    if(g.diskConfigWindow->shown())
+      g.diskConfigWindow->window->show();
+    return;
+  }
+#endif
+  if(typeid(g.vm)!=typeid(ZX128::ZX128VM)) {
+    g.diskConfigWindow->show(); // EP/CPC/TVC original behavior.
+    return;
+  }
+#if defined(__APPLE__) || defined(WIN32) || defined(__linux__)
+  struct C09PanelReentryGuard {
+    bool& open;
+    Ep128EmuGUI& gui;
+    explicit C09PanelReentryGuard(bool& value,Ep128EmuGUI& owner)
+      :open(value),gui(owner) {
+      open=true;
+      c09DiskPanelOwner=&gui;
+    }
+    ~C09PanelReentryGuard() {
+      open=false;
+      c09DiskPanelOwner=nullptr;
+      // After closing the disk form, restore native macOS key-window AND
+      // FLTK keyboard focus, not merely the latter. Do not raise it when
+      // a shutdown/machine switch/modal prompt owns focus instead.
+      if(!c09PendingQuit && gui.getRestartMachineType()<0)
+        c09RestoreEmulatorFocusAfterROMDisable(gui.mainWindow,gui.emulatorWindow);
+    }
+  } c09PanelGuard(c09DiskPanelOpen,g);
+# include "c09_four_drive_dialog.inc"
+#else
+  fl_message("Spectrum disk manager unavailable on this unsupported host platform");
+#endif
 }
 
 void Ep128EmuGUI::menuCallback_Options_PPriority(Fl_Widget *o, void *v)

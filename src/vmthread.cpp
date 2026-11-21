@@ -1327,6 +1327,7 @@ namespace Ep128Emu {
     tapeSampleRate = vmThread_.vmStatus.tapeSampleRate;
     tapeSampleSize = vmThread_.vmStatus.tapeSampleSize;
     floppyDriveLEDState = vmThread_.vmStatus.floppyDriveLEDState;
+    selectedFloppyDrive = vmThread_.vmStatus.selectedFloppyDrive;
     tapeRemoteState = vmThread_.vmStatus.tapeRemoteState;
     tapeMechanicalEngagementCount =
         vmThread_.vmStatus.tapeMechanicalEngagementCount;

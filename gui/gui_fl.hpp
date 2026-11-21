@@ -67,6 +67,7 @@ private:
   int a02DebugLastStatus;
   bool a02DebugLastEnabled;
   bool a02DebugLastEngine;
+  bool diagnosticLoggingEnabled;
   bool showInformationalDialogs;
   bool betaDOSAutoEnterOnReset;
   int betaDOSAutoEnterPolls;
@@ -130,6 +131,10 @@ private:
   bool speccyDOSWriteProtect;
   bool betaDiskWriteProtect;
   std::string betaDiskTemporaryDiskFile;
+  std::string c09SpeccyImagePath[4];
+  std::string c09BetaImagePath[4];
+  bool c09SpeccyWriteProtect[4];
+  bool c09BetaWriteProtect[4];
   int betaDOSInputStep;
   bool betaDOSInputPressed;
   std::string debuggerDirectory;
@@ -396,6 +401,8 @@ private:
   static void menuCallback_Options_RuntimeHUD(Fl_Widget *o, void *v);
   static void menuCallback_Machine_TwoDFX(Fl_Widget *o, void *v);
   static void menuCallback_Options_InformationDialogs(Fl_Widget *o, void *v);
+  static void menuCallback_Options_DiagToggle(Fl_Widget *o, void *v);
+  static void menuCallback_Options_DiagPath(Fl_Widget *o, void *v);
   static void menuCallback_Options_SndIncVol(Fl_Widget *o, void *v);
   static void menuCallback_Options_SndDecVol(Fl_Widget *o, void *v);
   static void menuCallback_Options_SndConfig(Fl_Widget *o, void *v);

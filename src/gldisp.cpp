@@ -41,6 +41,7 @@
 
 #ifdef WIN32
 #  include <wingdi.h>
+#  include "gui/gl_compatibility_gate.hpp"
 #  if defined(_MSC_VER) && !defined(__GNUC__)
 typedef void (APIENTRY *PFNGLBLENDCOLORPROC)(GLclampf, GLclampf, GLclampf,
                                              GLclampf);
@@ -69,7 +70,7 @@ typedef void (APIENTRY *PFNGLBLENDCOLORPROC)(GLclampf, GLclampf, GLclampf,
 static PFNGLBLENDCOLORPROC      glBlendColor__ = (PFNGLBLENDCOLORPROC) 0;
 static inline void glBlendColor_(GLclampf r, GLclampf g, GLclampf b, GLclampf a)
 {
-  if (glBlendColor__)
+  if (Ep128EmuGLCompat::validProc(glBlendColor__))
     glBlendColor__(r, g, b, a);
   else
     glDisable(GL_BLEND);
@@ -91,64 +92,73 @@ static PFNGLSHADERSOURCEPROC    glShaderSource_ = (PFNGLSHADERSOURCEPROC) 0;
 static PFNGLUNIFORM1FPROC       glUniform1f_ = (PFNGLUNIFORM1FPROC) 0;
 static PFNGLUNIFORM1IPROC       glUniform1i_ = (PFNGLUNIFORM1IPROC) 0;
 static PFNGLUSEPROGRAMPROC      glUseProgram_ = (PFNGLUSEPROGRAMPROC) 0;
+static HGLRC lastShaderContext = NULL;
 static bool queryGLShaderFunctions()
 {
+  // WGL function pointers belong to the current context and driver.
+  // Do not reuse cached shader entrypoints after FLTK recreates a context.
+  HGLRC currentContext = wglGetCurrentContext();
+  if (!currentContext) return false;
+  if (currentContext != lastShaderContext) {
+    lastShaderContext=currentContext;
+    haveGLShaderFuncs=false;
+  }
   if (!haveGLShaderFuncs) {
     glAttachShader_ =
         (PFNGLATTACHSHADERPROC) wglGetProcAddress("glAttachShader");
-    if (!glAttachShader_)
+    if (!Ep128EmuGLCompat::validProc(glAttachShader_))
       return false;
     glCompileShader_ =
         (PFNGLCOMPILESHADERPROC) wglGetProcAddress("glCompileShader");
-    if (!glCompileShader_)
+    if (!Ep128EmuGLCompat::validProc(glCompileShader_))
       return false;
     glCreateProgram_ =
         (PFNGLCREATEPROGRAMPROC) wglGetProcAddress("glCreateProgram");
-    if (!glCreateProgram_)
+    if (!Ep128EmuGLCompat::validProc(glCreateProgram_))
       return false;
     glCreateShader_ =
         (PFNGLCREATESHADERPROC) wglGetProcAddress("glCreateShader");
-    if (!glCreateShader_)
+    if (!Ep128EmuGLCompat::validProc(glCreateShader_))
       return false;
     glDeleteProgram_ =
         (PFNGLDELETEPROGRAMPROC) wglGetProcAddress("glDeleteProgram");
-    if (!glDeleteProgram_)
+    if (!Ep128EmuGLCompat::validProc(glDeleteProgram_))
       return false;
     glDeleteShader_ =
         (PFNGLDELETESHADERPROC) wglGetProcAddress("glDeleteShader");
-    if (!glDeleteShader_)
+    if (!Ep128EmuGLCompat::validProc(glDeleteShader_))
       return false;
     glDetachShader_ =
         (PFNGLDETACHSHADERPROC) wglGetProcAddress("glDetachShader");
-    if (!glDetachShader_)
+    if (!Ep128EmuGLCompat::validProc(glDetachShader_))
       return false;
     glGetShaderiv_ =
         (PFNGLGETSHADERIVPROC) wglGetProcAddress("glGetShaderiv");
-    if (!glGetShaderiv_)
+    if (!Ep128EmuGLCompat::validProc(glGetShaderiv_))
       return false;
     glGetUniformLocation_ =
         (PFNGLGETUNIFORMLOCATIONPROC) wglGetProcAddress("glGetUniformLocation");
-    if (!glGetUniformLocation_)
+    if (!Ep128EmuGLCompat::validProc(glGetUniformLocation_))
       return false;
     glLinkProgram_ =
         (PFNGLLINKPROGRAMPROC) wglGetProcAddress("glLinkProgram");
-    if (!glLinkProgram_)
+    if (!Ep128EmuGLCompat::validProc(glLinkProgram_))
       return false;
     glShaderSource_ =
         (PFNGLSHADERSOURCEPROC) wglGetProcAddress("glShaderSource");
-    if (!glShaderSource_)
+    if (!Ep128EmuGLCompat::validProc(glShaderSource_))
       return false;
     glUniform1f_ =
         (PFNGLUNIFORM1FPROC) wglGetProcAddress("glUniform1f");
-    if (!glUniform1f_)
+    if (!Ep128EmuGLCompat::validProc(glUniform1f_))
       return false;
     glUniform1i_ =
         (PFNGLUNIFORM1IPROC) wglGetProcAddress("glUniform1i");
-    if (!glUniform1i_)
+    if (!Ep128EmuGLCompat::validProc(glUniform1i_))
       return false;
     glUseProgram_ =
         (PFNGLUSEPROGRAMPROC) wglGetProcAddress("glUseProgram");
-    if (!glUseProgram_)
+    if (!Ep128EmuGLCompat::validProc(glUseProgram_))
       return false;
     haveGLShaderFuncs = true;
   }
@@ -1182,8 +1192,20 @@ namespace Ep128Emu {
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
 #ifdef WIN32
-    if (!glBlendColor__)
-      glBlendColor__ = (PFNGLBLENDCOLORPROC) wglGetProcAddress("glBlendColor");
+    // FLTK can replace the WGL context during fullscreen/resize/mode switch.
+    // Refresh context-local blending pointers and reject WGL sentinel values.
+    static HGLRC lastBlendContext = NULL;
+    if (lastBlendContext != wglGetCurrentContext()) {
+      lastBlendContext=wglGetCurrentContext();
+      glBlendColor__=(PFNGLBLENDCOLORPROC) 0;
+    }
+    if (!Ep128EmuGLCompat::validProc(glBlendColor__)) {
+      glBlendColor__=(PFNGLBLENDCOLORPROC) wglGetProcAddress("glBlendColor");
+      if (!Ep128EmuGLCompat::validProc(glBlendColor__))
+        glBlendColor__=(PFNGLBLENDCOLORPROC) wglGetProcAddress("glBlendColorEXT");
+      if (!Ep128EmuGLCompat::validProc(glBlendColor__))
+        glBlendColor__=(PFNGLBLENDCOLORPROC) 0;
+    }
 #endif
 
     if (displayParameters.displayQuality == 0 &&

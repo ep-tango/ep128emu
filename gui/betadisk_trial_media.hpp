@@ -2,7 +2,7 @@
 // No firmware bytes or user source files become part of the application.
 #ifndef EP128EMU_BETADISK_TRIAL_MEDIA_HPP
 #define EP128EMU_BETADISK_TRIAL_MEDIA_HPP
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -263,5 +263,5 @@ inline StagedTRD stageTRDWritableCopy(const std::string& source,
   return result;
 }
 } // namespace Ep128EmuBetaTrial
-#endif // __APPLE__ || WIN32
+#endif // __APPLE__ || WIN32 || __linux__
 #endif

@@ -18,6 +18,7 @@
 // Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 #include "gui.hpp"
+#include "diagnostic_logging.hpp"
 #include "ep128vm.hpp"
 #include "zx128vm.hpp"
 #include "cpc464vm.hpp"
@@ -46,8 +47,13 @@ extern char **environ;
 #  include <windows.h>
 #  include "win_trial_paths.hpp"
 #  include "rom_archive_catalog.hpp"
+#  include "gl_compatibility_probe_win.hpp" // GL222: host-only pre-VM probe
 #else
 #  include <dirent.h>
+#  ifndef DISABLE_OPENGL_DISPLAY
+#    include "gl_compatibility_probe_posix.hpp" // Mac CGL / Linux GLX
+#    include <FL/fl_ask.H>
+#  endif
 #endif
 
 #ifdef __APPLE__
@@ -526,10 +532,80 @@ int main(int argc, char **argv)
     if (glEnabled) {
       glCanDoSingleBuf = bool(Fl_Gl_Window::can_do(FL_RGB | FL_SINGLE));
       glCanDoDoubleBuf = bool(Fl_Gl_Window::can_do(FL_RGB | FL_DOUBLE));
-      if (glCanDoSingleBuf | glCanDoDoubleBuf)
+#ifdef WIN32
+      // FLTK can_do() checks only pixel format. Before allocating the VM,
+      // validate a real WGL context with 565 texture upload, blend operation
+      // and bounded pixel readback. No visible windows or guest state exist.
+      Ep128EmuGLCompat::Report glReport;
+      bool doublePass = false;
+      bool singlePass = false;
+      if (glCanDoDoubleBuf) {
+        doublePass=Ep128EmuGLCompat::runHiddenWGLProbe(true,glReport);
+      }
+      if (glCanDoSingleBuf) {
+        Ep128EmuGLCompat::Report singleReport;
+        singlePass=Ep128EmuGLCompat::runHiddenWGLProbe(false,singleReport);
+        if (!doublePass) glReport=singleReport;
+      }
+      glCanDoDoubleBuf=doublePass;
+      glCanDoSingleBuf=singlePass;
+      if (!doublePass && !singlePass) {
+        if (glReport.result.state == Ep128EmuGLCompat::UNTESTED)
+          glReport.result=Ep128EmuGLCompat::Result(
+              Ep128EmuGLCompat::UNSUPPORTED,
+              "GL_PIXEL_FORMAT_UNAVAILABLE",false,false);
+        glEnabled=false;
+      }
+      Ep128EmuGLCompat::optInDiagnostic(glReport,
+                                       glEnabled?"opengl":"software");
+      Ep128EmuDiagnostic::rememberOpenGL(
+        std::string("selected_backend=")+(glEnabled?"opengl":"software")+
+        " fallback_reason="+glReport.result.reason+
+        " GL_VENDOR="+glReport.vendor+
+        " GL_RENDERER="+glReport.renderer+
+        " GL_VERSION="+glReport.version+
+        " probe="+(glReport.result.state==Ep128EmuGLCompat::SUPPORTED?"PASS":"FAIL"));
+      if (!glEnabled)
+        (void) MessageBoxA((HWND) 0,
+          "OpenGL display is unavailable or failed a compatibility check. "
+          "Software display has been selected.",
+          "ep128emu display",MB_OK|MB_ICONWARNING);
+#else
+      // FLTK can_do() checks pixel formats, not usable texture/blend/readback.
+      // Validate a disposable native host context before guest creation.
+      Ep128EmuGLCompat::PosixReport glReport;
+      bool doublePass=false, singlePass=false;
+      if (glCanDoDoubleBuf)
+        doublePass=Ep128EmuGLCompat::runHiddenPosixProbe(true,glReport);
+      if (glCanDoSingleBuf) {
+        Ep128EmuGLCompat::PosixReport singleReport;
+        singlePass=Ep128EmuGLCompat::runHiddenPosixProbe(false,singleReport);
+        if (!doublePass)glReport=singleReport;
+      }
+      glCanDoDoubleBuf=doublePass;
+      glCanDoSingleBuf=singlePass;
+      if (!doublePass && !singlePass) {
+        if (glReport.result.state==Ep128EmuGLCompat::UNTESTED)
+          glReport.result=Ep128EmuGLCompat::Result(
+              Ep128EmuGLCompat::UNSUPPORTED,
+              "GL_PIXEL_FORMAT_UNAVAILABLE",false,false);
+        glEnabled=false;
+      }
+      Ep128EmuGLCompat::optInPosixDiagnostic(glReport,
+                                             glEnabled?"opengl":"software");
+      Ep128EmuDiagnostic::rememberOpenGL(
+        std::string("selected_backend=")+(glEnabled?"opengl":"software")+
+        " fallback_reason="+glReport.result.reason+
+        " GL_VENDOR="+glReport.vendor+
+        " GL_RENDERER="+glReport.renderer+
+        " GL_VERSION="+glReport.version+
+        " probe="+(glReport.result.state==Ep128EmuGLCompat::SUPPORTED?"PASS":"FAIL"));
+      if (!glEnabled)
+        fl_alert("OpenGL display is unavailable or failed a compatibility "
+                 "check.\nSoftware display has been selected.");
+#endif
+      if (glEnabled)
         w = new Ep128Emu::OpenGLDisplay(32, 32, 384, 288, "");
-      else
-        glEnabled = false;
     }
 #endif
     if (!glEnabled)

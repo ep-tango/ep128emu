@@ -38,6 +38,10 @@ namespace ZX128 {
     uint32_t ulaClockHz;
     Ep128Emu::WD177x controller;
     Ep128Emu::FloppyDrive drives[4];
+    // C10: presentation-only FDC command pulse, not physical motor control.
+    // VM status is sampled every 2 ms (500 Hz); 81 ticks matches the
+    // existing Enterprise FloppyDrive LED spin-down envelope (162 ms).
+    std::array<uint8_t,4> ledActivityTicks;
    public:
     SpeccyDOSBus();
     // Raw 8-KiB ROM has hardware data lines D1 and D5 swapped.
@@ -67,6 +71,12 @@ namespace ZX128 {
     bool writeMemory(uint16_t addr, uint8_t value);
 
     Ep128Emu::WD177x& getController() { return controller; }
+    bool consumeDriveActivityLED(unsigned int n) {
+      uint8_t& ticks=ledActivityTicks[n & 3U];
+      if(ticks==0U) return false;
+      --ticks;
+      return true;
+    }
     Ep128Emu::FloppyDrive& getDrive(unsigned int n)
       { return drives[n & 3U]; }
 

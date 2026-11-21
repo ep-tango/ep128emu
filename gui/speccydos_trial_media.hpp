@@ -2,7 +2,7 @@
 // Never mount or modify the user's original SDD; only an owned temp copy.
 #ifndef EP128EMU_SPECCYDOS_TRIAL_MEDIA_HPP
 #define EP128EMU_SPECCYDOS_TRIAL_MEDIA_HPP
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -12,7 +12,11 @@
 #include <vector>
 #include <unistd.h>
 #include <sys/stat.h>
+#ifdef __APPLE__
 #include <mach-o/dyld.h>
+#else
+#include "c15_linux_host.hpp"
+#endif
 
 namespace Ep128EmuSpeccyTrial {
 inline std::vector<uint8_t> readROM(const std::string& path) {
@@ -29,6 +33,18 @@ inline std::vector<uint8_t> readROM(const std::string& path) {
 // Resolve the ROM relative to the running .app, independent of CWD,
 // Downloads, Developer paths or per-user ROM preferences. ROM bytes are
 // provisioned locally in the bundle and MUST NOT be added to Git.
+#ifdef __linux__
+// Linux release layout: <root>/bin/ep128emu + <root>/SpeccyDOS/*
+// The executable's real location is independent of working directory.
+inline std::string bundledROMPathFromExecutable(const std::string& exe,
+                                                bool wd1772) {
+  return Ep128EmuLinuxHost::bundledROMPathFromExecutable(
+      exe,"SpeccyDOS",wd1772?"WD1772.rom":"WD1770.rom");
+}
+inline std::string bundledROMPath(bool wd1772) {
+  return bundledROMPathFromExecutable(Ep128EmuLinuxHost::executablePath(),wd1772);
+}
+#else
 inline std::string bundledROMPathFromExecutable(const std::string& exe,
                                                 bool wd1772) {
   const std::string marker("/Contents/MacOS/");
@@ -48,6 +64,7 @@ inline std::string bundledROMPath(bool wd1772) {
     throw std::runtime_error("SpeccyDOS: cannot determine executable path");
   return bundledROMPathFromExecutable(exe.data(),wd1772);
 }
+#endif
 inline uint64_t romFingerprint(const std::vector<uint8_t>& b) {
   uint64_t h=UINT64_C(14695981039346656037);
   for (size_t i=0;i<b.size();++i) {h^=uint64_t(b[i]);h*=UINT64_C(1099511628211);}
@@ -214,5 +231,5 @@ inline std::string stageSDDReadOnly(const std::string& source) {
   return path;
 }
 } // namespace Ep128EmuSpeccyTrial
-#endif // __APPLE__ / WIN32
+#endif // __APPLE__ / WIN32 / __linux__
 #endif

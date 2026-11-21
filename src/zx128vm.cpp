@@ -1255,6 +1255,39 @@ namespace ZX128 {
     }
   }
 
+  uint32_t ZX128VM::getFloppyDriveLEDState()
+  {
+    // Enterprise and Spectrum share the *same* FloppyDrive LED colors,
+    // spin-down counter and 500 Hz status clock. However SpeccyDOS 3B41h
+    // and Beta Disk FFh select/motor registers can keep motorOnInput set
+    // indefinitely, even after the WD command has ended. For Spectrum
+    // the visible A-D indicators show a short *command-activity* pulse,
+    // without changing physical motor/ready state, controller I/O or media.
+    // The real FloppyDrive state is still read on every VM status tick:
+    // this advances the existing spin-down/dirty-flush state machine.
+    // A (drive 0) is the low byte, matching Enterprise's GUI mapping.
+    uint32_t ledState = 0U;
+    if (speccyDOS) {
+      for (int i = 3; i >= 0; --i) {
+        const unsigned n=unsigned(i);
+        const uint8_t physical=speccyDOS->getDrive(n).getLEDState();
+        const bool active=speccyDOS->consumeDriveActivityLED(n);
+        ledState = (ledState << 8) |
+                   uint32_t(active ? (physical ? physical : 0x03U) : 0U);
+      }
+    }
+    else if (betaDisk) {
+      for (int i = 3; i >= 0; --i) {
+        const unsigned n=unsigned(i);
+        const uint8_t physical=betaDisk->getDrive(n).getLEDState();
+        const bool active=betaDisk->consumeDriveActivityLED(n);
+        ledState = (ledState << 8) |
+                   uint32_t(active ? (physical ? physical : 0x03U) : 0U);
+      }
+    }
+    return ledState;
+  }
+
   void ZX128VM::getVMStatus(VMStatus& vmStatus_)
   {
     vmStatus_.tapeReadOnly = getIsTapeReadOnly();
@@ -1262,6 +1295,12 @@ namespace ZX128 {
     vmStatus_.tapeLength = getTapeLength();
     vmStatus_.tapeSampleRate = getTapeSampleRate();
     vmStatus_.tapeSampleSize = getTapeSampleSize();
+    vmStatus_.floppyDriveLEDState = getFloppyDriveLEDState();
+    // The ROM selects a physical drive through its controller registers;
+    // mounting a host disk image does not alter this guest-selected drive.
+    vmStatus_.selectedFloppyDrive =
+        (speccyDOS ? speccyDOS->getDriveNumber() :
+         betaDisk ? uint8_t(betaDisk->getSelectedDriveNumber()) : 0xFFU);
     vmStatus_.isPlayingDemo = isPlayingDemo;
     if (demoFile != (Ep128Emu::File *) 0 && !isRecordingDemo)
       stopDemoRecording(true);
